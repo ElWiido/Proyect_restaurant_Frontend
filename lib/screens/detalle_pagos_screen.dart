@@ -1,0 +1,221 @@
+import 'package:flutter/material.dart';
+import '../services/api_service.dart';
+import 'package:intl/intl.dart';
+
+class DetallePagosScreen extends StatefulWidget {
+  final String fecha; // Formato 'yyyy-MM-dd'
+
+  const DetallePagosScreen({super.key, required this.fecha});
+
+  @override
+  State<DetallePagosScreen> createState() => _DetallePagosScreenState();
+}
+
+class _DetallePagosScreenState extends State<DetallePagosScreen> {
+  final ApiService apiService = ApiService();
+  late Future<List<Map<String, dynamic>>> pagosFuture;
+  late DateTime selectedDate;
+
+  @override
+  void initState() {
+    super.initState();
+    selectedDate = DateTime.parse(widget.fecha);
+    _cargarPagos();
+  }
+
+  void _cargarPagos() {
+    final fechaStr = DateFormat('yyyy-MM-dd').format(selectedDate);
+    pagosFuture = apiService.getPagosByDate(fechaStr);
+  }
+
+  Future<void> _pickDate() async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+
+    if (picked != null && picked != selectedDate) {
+      setState(() {
+        selectedDate = picked;
+        _cargarPagos();
+      });
+    }
+  }
+
+  String _formatHora(String? datetime) {
+    if (datetime == null) return '';
+    try {
+      final dt = DateTime.parse(datetime);
+      return DateFormat('hh:mm a').format(dt); // AM/PM
+    } catch (_) {
+      return datetime;
+    }
+  }
+
+  double _parseMonto(dynamic value) {
+    if (value == null) return 0;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0;
+    return 0;
+  }
+
+  double _totalVentas(List<Map<String, dynamic>> pagos) {
+    return pagos.fold(0, (sum, p) => sum + _parseMonto(p['monto']));
+  }
+
+  String formatMoneda(double value) {
+    final formatter = NumberFormat('#,###', 'es_CO');
+    return '\$${formatter.format(value)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fechaStr = DateFormat('yyyy-MM-dd').format(selectedDate);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Pagos del $fechaStr'),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.calendar_today),
+            onPressed: _pickDate,
+            tooltip: 'Seleccionar fecha',
+          ),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: pagosFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+
+          final pagos = snapshot.data ?? [];
+
+          if (pagos.isEmpty) {
+            return const Center(child: Text('No hay pagos registrados'));
+          }
+
+          final total = _totalVentas(pagos);
+
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // TOTAL
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'TOTAL VENTAS',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        formatMoneda(total),
+                        style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // TABLA
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minWidth: MediaQuery.of(context).size.width,
+                      ),
+                      child: DataTable(
+                        headingRowColor: MaterialStateProperty.all(
+                          Colors.grey.shade200,
+                        ),
+                        dataRowHeight: 60,
+                        columnSpacing: 20,
+                        columns: const [
+                          DataColumn(
+                            label: Text(
+                              'Mesa',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          DataColumn(
+                            label: Text(
+                              'Usuario',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          DataColumn(
+                            label: Text(
+                              'Método',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          DataColumn(
+                            label: Text(
+                              'Monto',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          DataColumn(
+                            label: Text(
+                              'Hora',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                        rows: pagos.map((pago) {
+                          return DataRow(
+                            cells: [
+                              DataCell(Text('${pago['Mesa'] ?? ''}')),
+                              DataCell(Text('${pago['Usuario'] ?? ''}')),
+                              DataCell(
+                                Text(
+                                  '${pago['metodoPago'] ?? pago['metodo'] ?? ''}',
+                                ),
+                              ),
+                              DataCell(
+                                Text(formatMoneda(_parseMonto(pago['monto']))),
+                              ),
+                              DataCell(Text(_formatHora(pago['createdAt']))),
+                            ],
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
