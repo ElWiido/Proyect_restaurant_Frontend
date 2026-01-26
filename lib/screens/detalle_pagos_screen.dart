@@ -153,7 +153,7 @@ class _DetallePagosScreenState extends State<DetallePagosScreen> {
                         minWidth: MediaQuery.of(context).size.width,
                       ),
                       child: DataTable(
-                        headingRowColor: MaterialStateProperty.all(
+                        headingRowColor: WidgetStateProperty.all(
                           Colors.grey.shade200,
                         ),
                         dataRowHeight: 60,
