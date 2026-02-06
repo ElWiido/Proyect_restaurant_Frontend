@@ -4,7 +4,7 @@ import '../services/api_service.dart';
 class AgregarProductoScreen extends StatefulWidget {
   final int idPedido;
   final int idMesa;
-  final int numeroMesa;
+  final String numeroMesa;
 
   const AgregarProductoScreen({
     super.key,

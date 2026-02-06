@@ -39,7 +39,11 @@ class _MesasScreenState extends State<MesasScreen> {
       final data = await apiService.getMesas();
       setState(() {
         mesas = List.from(data)
-          ..sort((a, b) => (a['numero'] ?? 0).compareTo(b['numero'] ?? 0));
+          ..sort((a, b) {
+            final numA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
+            final numB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
+            return numA.compareTo(numB);
+          });
         isLoading = false;
       });
     } catch (e) {
@@ -79,9 +83,11 @@ class _MesasScreenState extends State<MesasScreen> {
             if (mesaAct['numero'] != null) {
               mesas[idx]['numero'] = mesaAct['numero'];
             }
-            mesas.sort(
-              (a, b) => (a['numero'] ?? 0).compareTo(b['numero'] ?? 0),
-            );
+            mesas.sort((a, b) {
+              final numA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
+              final numB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
+              return numA.compareTo(numB);
+            });
           }
         });
       }
@@ -278,13 +284,16 @@ class _MesasScreenState extends State<MesasScreen> {
 
           return GestureDetector(
             onTap: () {
+              final idMesaInt = (mesa['idMesa'] ?? mesa['id_mesa']) is int
+                  ? (mesa['idMesa'] ?? mesa['id_mesa'])
+                  : int.parse((mesa['idMesa'] ?? mesa['id_mesa']).toString());
               if (libre) {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
                     builder: (_) => PedidoScreen(
-                      idMesa: mesa['idMesa'] ?? mesa['id_mesa'],
-                      numeroMesa: mesa['numero'],
+                      idMesa: idMesaInt,
+                      numeroMesa: (mesa['numero'] ?? '').toString(),
                       idUsuario: widget.idUsuario,
                     ),
                   ),
@@ -294,8 +303,8 @@ class _MesasScreenState extends State<MesasScreen> {
                   context,
                   MaterialPageRoute(
                     builder: (_) => PagoScreen(
-                      idMesa: mesa['idMesa'] ?? mesa['id_mesa'],
-                      numeroMesa: mesa['numero'],
+                      idMesa: idMesaInt,
+                      numeroMesa: (mesa['numero'] ?? '').toString(),
                       rol: widget.rol,
                     ),
                   ),

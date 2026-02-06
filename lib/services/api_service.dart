@@ -243,4 +243,49 @@ class ApiService {
       throw Exception('Error al cargar los pagos: ${response.body}');
     }
   }
+
+  Future<Map<String, dynamic>> actualizarDetallePedido(
+    int idDetalle, {
+    double? precioUnitario,
+    int? cantidad,
+    String? detalle,
+  }) async {
+    final url = Uri.parse('$baseUrl/detalle_pedidos/$idDetalle');
+
+    final Map<String, dynamic> body = {};
+
+    if (precioUnitario != null) {
+      body['precio_unitario'] = precioUnitario;
+    }
+    if (cantidad != null) {
+      body['cantidad'] = cantidad;
+    }
+    if (detalle != null) {
+      body['detalle'] = detalle;
+    }
+
+    try {
+      final response = await _client
+          .put(
+            url,
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception(
+          'Error al actualizar detalle: ${response.statusCode} - ${response.body}',
+        );
+      }
+    } catch (e) {
+      print('Error en actualizarDetallePedido: $e');
+      rethrow;
+    }
+  }
 }

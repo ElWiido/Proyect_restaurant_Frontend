@@ -11,7 +11,7 @@ final formatoPesos = NumberFormat.currency(
 
 class PagoScreen extends StatefulWidget {
   final int idMesa;
-  final int numeroMesa;
+  final String numeroMesa;
   final String rol;
 
   const PagoScreen({
@@ -38,6 +38,63 @@ class _PagoScreenState extends State<PagoScreen> {
     super.initState();
     _cargarPedido();
     // Inicializar el monto con el total calculado (cuando se cargue el pedido)
+  }
+
+  Future<void> _editarPrecioDetalle(Map<String, dynamic> detalle) async {
+    final TextEditingController precioController = TextEditingController(
+      text:
+          detalle['precio_unitario']?.toString() ??
+          detalle['producto']?['precio']?.toString() ??
+          '0',
+    );
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Editar precio unitario'),
+        content: TextField(
+          controller: precioController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            labelText: 'Nuevo precio',
+            prefixText: '\$ ',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final nuevoPrecio = double.tryParse(
+                precioController.text.replaceAll(',', '.'),
+              );
+
+              if (nuevoPrecio == null || nuevoPrecio <= 0) return;
+
+              try {
+                final int idDetalle = detalle['idDetalle'];
+
+                await apiService.actualizarDetallePedido(
+                  idDetalle,
+                  precioUnitario: nuevoPrecio,
+                );
+
+                Navigator.pop(context);
+                _cargarPedido(); // 🔁 refrescar pedido
+              } catch (e) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error al actualizar precio: $e')),
+                );
+              }
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _cargarPedido() async {
@@ -132,26 +189,33 @@ class _PagoScreenState extends State<PagoScreen> {
     }
   }
 
-  //Calcula el total del pedido
   double _calcularTotal() {
     if (pedido == null || pedido!['detalles'] == null) return 0.0;
 
     double total = 0.0;
 
     for (var detalle in pedido!['detalles']) {
-      final precioRaw = detalle['producto']?['precio'];
       final cantidadRaw = detalle['cantidad'] ?? 1;
 
       double precio = 0.0;
       int cantidad = 1;
 
-      // Normalizar precio
-      if (precioRaw is String) {
-        precio = double.tryParse(precioRaw) ?? 0.0;
-      } else if (precioRaw is int) {
-        precio = precioRaw.toDouble();
-      } else if (precioRaw is double) {
-        precio = precioRaw;
+      final precioUnitario = detalle['precioUnitario'];
+
+      if (precioUnitario != null) {
+        if (precioUnitario is String) {
+          precio = double.tryParse(precioUnitario) ?? 0.0;
+        } else if (precioUnitario is num) {
+          precio = precioUnitario.toDouble();
+        }
+      } else {
+        // 🔁 SOLO SI NO EXISTE precio_unitario
+        final precioProducto = detalle['producto']?['precio'];
+        if (precioProducto is String) {
+          precio = double.tryParse(precioProducto) ?? 0.0;
+        } else if (precioProducto is num) {
+          precio = precioProducto.toDouble();
+        }
       }
 
       // Normalizar cantidad
@@ -161,7 +225,6 @@ class _PagoScreenState extends State<PagoScreen> {
         cantidad = int.tryParse(cantidadRaw) ?? 1;
       }
 
-      //Subtotal
       total += precio * cantidad;
     }
 
@@ -284,7 +347,9 @@ class _PagoScreenState extends State<PagoScreen> {
                                 detalle,
                               ) {
                                 final producto = detalle['producto'];
-                                final precioRaw = producto?['precio'];
+                                final precioRaw =
+                                    detalle['precioUnitario'] ??
+                                    producto?['precio'];
                                 final cantidadRaw = detalle['cantidad'] ?? 1;
 
                                 double precio = 0.0;
@@ -307,6 +372,9 @@ class _PagoScreenState extends State<PagoScreen> {
                                 return Card(
                                   margin: const EdgeInsets.only(bottom: 8),
                                   child: ListTile(
+                                    onTap: esAdmin
+                                        ? () => _editarPrecioDetalle(detalle)
+                                        : null,
                                     title: Text(
                                       producto?['nombre'] ?? 'Producto',
                                       style: const TextStyle(

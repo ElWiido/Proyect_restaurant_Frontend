@@ -100,7 +100,14 @@ class _DetallePagosScreenState extends State<DetallePagosScreen> {
             return Center(child: Text('Error: ${snapshot.error}'));
           }
 
-          final pagos = snapshot.data ?? [];
+          final pagos = (snapshot.data ?? [])
+            ..sort((a, b) {
+              final fechaA =
+                  DateTime.tryParse(a['createdAt'] ?? '') ?? DateTime(1970);
+              final fechaB =
+                  DateTime.tryParse(b['createdAt'] ?? '') ?? DateTime(1970);
+              return fechaB.compareTo(fechaA); //más reciente primero
+            });
 
           if (pagos.isEmpty) {
             return const Center(child: Text('No hay pagos registrados'));

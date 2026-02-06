@@ -3,7 +3,7 @@ import '../services/api_service.dart';
 
 class PedidoScreen extends StatefulWidget {
   final int idMesa;
-  final int numeroMesa;
+  final String numeroMesa;
   final int idUsuario;
 
   const PedidoScreen({
