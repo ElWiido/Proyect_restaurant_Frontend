@@ -167,78 +167,108 @@ class _PedidoScreenState extends State<PedidoScreen> {
                               return Container(
                                 margin: const EdgeInsets.symmetric(
                                   horizontal: 8,
-                                  vertical: 4,
+                                  vertical: 6,
                                 ),
+                                padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: const Color.fromARGB(
-                                      255,
-                                      0,
-                                      0,
-                                      0,
-                                    ), // color del borde cuando está seleccionado
-                                    width: 2,
-                                  ),
-                                  borderRadius: BorderRadius.circular(8),
-                                  color: Colors.white, // fondo
+                                  borderRadius: BorderRadius.circular(12),
+                                  color: Colors.white,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.08),
+                                      blurRadius: 5,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
                                 ),
-                                child: ListTile(
-                                  title: Row(
-                                    children: [
-                                      Expanded(child: Text(detalle['nombre'])),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.remove_circle,
-                                          color: Colors.red,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    /// 🔹 FILA SUPERIOR (nombre + cantidad + eliminar)
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            detalle['nombre'],
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
                                         ),
-                                        onPressed: () {
-                                          setState(() {
-                                            if (detalle['cantidad'] > 1) {
-                                              detalle['cantidad']--;
-                                            }
-                                          });
-                                        },
-                                      ),
-                                      Text(
-                                        detalle['cantidad'].toString(),
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
 
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.add_circle,
-                                          color: Colors.green,
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.remove_circle,
+                                            color: Colors.red,
+                                          ),
+                                          onPressed: () {
+                                            setState(() {
+                                              if (detalle['cantidad'] > 1) {
+                                                detalle['cantidad']--;
+                                              }
+                                            });
+                                          },
                                         ),
-                                        onPressed: () {
-                                          setState(() {
-                                            detalle['cantidad']++;
-                                          });
-                                        },
+
+                                        Text(
+                                          detalle['cantidad'].toString(),
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.add_circle,
+                                            color: Colors.green,
+                                          ),
+                                          onPressed: () {
+                                            setState(() {
+                                              detalle['cantidad']++;
+                                            });
+                                          },
+                                        ),
+
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.delete,
+                                            color: Colors.red,
+                                          ),
+                                          onPressed: () =>
+                                              _eliminarDetalle(index),
+                                        ),
+                                      ],
+                                    ),
+
+                                    const SizedBox(height: 8),
+
+                                    /// 🔹 CAMPO DE NOTA BONITO
+                                    TextField(
+                                      decoration: InputDecoration(
+                                        hintText:
+                                            'Ej: sin cebolla, término medio...',
+                                        filled: true,
+                                        fillColor: Colors.grey[100],
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 10,
+                                            ),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          borderSide: BorderSide.none,
+                                        ),
                                       ),
-                                    ],
-                                  ),
-                                  subtitle: TextField(
-                                    decoration: const InputDecoration(
-                                      hintText: '',
-                                      border: InputBorder.none,
-                                      contentPadding: EdgeInsets.zero,
+                                      onChanged: (value) {
+                                        detalles[index]['detalle'] = value;
+                                      },
+                                      maxLines: 2,
                                     ),
-                                    onChanged: (value) {
-                                      detalles[index]['detalle'] = value;
-                                    },
-                                    keyboardType: TextInputType.multiline,
-                                    maxLines: null,
-                                  ),
-                                  trailing: IconButton(
-                                    icon: const Icon(
-                                      Icons.delete,
-                                      color: Colors.red,
-                                    ),
-                                    onPressed: () => _eliminarDetalle(index),
-                                  ),
+                                  ],
                                 ),
                               );
                             },

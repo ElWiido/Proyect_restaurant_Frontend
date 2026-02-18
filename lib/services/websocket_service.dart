@@ -39,12 +39,15 @@ class WebSocketService {
       });
 
       socket!.on('connect', (_) {
-        print('WebSocket conectado: Mesas');
+        print('WebSocket conectado');
         socket!.emit('join_mesas');
+        socket!.emit('join_pagos');
       });
 
-      socket!.on('connect', (_) {
-        print('WebSocket conectado: Pagos');
+      socket!.onReconnect((_) {
+        print('Reconectado');
+
+        socket!.emit('join_mesas');
         socket!.emit('join_pagos');
       });
 

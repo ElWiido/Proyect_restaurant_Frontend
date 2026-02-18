@@ -234,6 +234,8 @@ class _PagoScreenState extends State<PagoScreen> {
   @override
   Widget build(BuildContext context) {
     final esAdmin = widget.rol == 'administrador';
+    final puedeEditarPrecio =
+        widget.rol == 'administrador' || widget.rol == 'mesero';
 
     return Scaffold(
       appBar: AppBar(
@@ -372,7 +374,7 @@ class _PagoScreenState extends State<PagoScreen> {
                                 return Card(
                                   margin: const EdgeInsets.only(bottom: 8),
                                   child: ListTile(
-                                    onTap: esAdmin
+                                    onTap: puedeEditarPrecio
                                         ? () => _editarPrecioDetalle(detalle)
                                         : null,
                                     title: Text(
@@ -569,7 +571,7 @@ class _PagoScreenState extends State<PagoScreen> {
                   Container(
                     padding: const EdgeInsets.all(16),
                     child: const Text(
-                      '🔒 Solo administradores pueden procesar pagos',
+                      'Solo administradores pueden procesar pagos',
                       style: TextStyle(
                         color: Colors.red,
                         fontSize: 16,
