@@ -80,30 +80,90 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen> {
     setState(() => isProcesando = true);
 
     try {
-      for (var detalle in detalles) {
-        await apiService.agregarProductoAPedido(
-          widget.idPedido,
-          idProducto: detalle['id_producto'],
-          cantidad: detalle['cantidad'],
-          detalle: detalle['detalle'],
-        );
-      }
+      await apiService.agregarProductosLote(widget.idPedido, detalles);
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Productos agregados al pedido')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Productos agregados')));
 
-      Navigator.pop(context, true); // indica que se actualizaron productos
+      Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Error agregando productos: $e')));
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => isProcesando = false);
     }
+  }
+
+  ///MENÚ EJECUTIVO ARRIBA
+  List<Widget> _buildMenuEjecutivo() {
+    final ejecutivos = productos
+        .where((p) => p['categoria'].toString().toLowerCase() == 'ejecutivo')
+        .toList();
+
+    if (ejecutivos.isEmpty) return [];
+
+    return [
+      const Text(
+        "MENÚ EJECUTIVO",
+        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      ),
+      const SizedBox(height: 8),
+      ...ejecutivos.map((producto) {
+        return Card(
+          child: ListTile(
+            title: Text(producto['nombre']),
+            subtitle: Text('\$${producto['precio']}'),
+            trailing: IconButton(
+              icon: const Icon(Icons.add_circle, color: Colors.green),
+              onPressed: () => _agregarDetalle(
+                producto['idProducto'] ?? producto['id_producto'],
+                producto['nombre'],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    ];
+  }
+
+  ///CATEGORÍAS DESPLEGABLES
+  List<Widget> _buildCategorias() {
+    final categorias = productos
+        .where((p) => p['categoria'].toString().toLowerCase() != 'ejecutivo')
+        .map((p) => p['categoria'])
+        .toSet()
+        .toList();
+
+    return categorias.map((categoria) {
+      final productosCategoria = productos
+          .where((p) => p['categoria'] == categoria)
+          .toList();
+
+      return ExpansionTile(
+        title: Text(
+          categoria.toString().toUpperCase(),
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        children: productosCategoria.map((producto) {
+          return ListTile(
+            title: Text(producto['nombre']),
+            subtitle: Text('\$${producto['precio']}'),
+            trailing: IconButton(
+              icon: const Icon(Icons.add_circle, color: Colors.green),
+              onPressed: () => _agregarDetalle(
+                producto['idProducto'] ?? producto['id_producto'],
+                producto['nombre'],
+              ),
+            ),
+          );
+        }).toList(),
+      );
+    }).toList();
   }
 
   @override
@@ -121,30 +181,16 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen> {
               children: [
                 Expanded(
                   flex: 3,
-                  child: ListView.builder(
+                  child: ListView(
                     padding: const EdgeInsets.all(16),
-                    itemCount: productos.length,
-                    itemBuilder: (context, index) {
-                      final producto = productos[index];
-                      return Card(
-                        child: ListTile(
-                          title: Text(producto['nombre'] ?? ''),
-                          subtitle: Text('\$${producto['precio']}'),
-                          trailing: IconButton(
-                            icon: const Icon(
-                              Icons.add_circle,
-                              color: Colors.green,
-                            ),
-                            onPressed: () => _agregarDetalle(
-                              producto['idProducto'] ?? producto['id_producto'],
-                              producto['nombre'],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                    children: [
+                      ..._buildMenuEjecutivo(),
+                      const SizedBox(height: 10),
+                      ..._buildCategorias(),
+                    ],
                   ),
                 ),
+
                 const Divider(height: 1, thickness: 2),
                 Expanded(
                   flex: 2,
@@ -219,9 +265,20 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen> {
                                   ),
                                   subtitle: TextField(
                                     decoration: const InputDecoration(
-                                      hintText: 'Nota (opcional)',
+                                      hintText: 'Nota',
+                                      filled: true,
+                                      fillColor: Color.fromARGB(
+                                        255,
+                                        245,
+                                        245,
+                                        245,
+                                      ),
                                       border: InputBorder.none,
-                                      contentPadding: EdgeInsets.zero,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 10,
+                                          ),
                                     ),
                                     onChanged: (value) {
                                       detalles[index]['detalle'] = value;

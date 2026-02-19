@@ -21,7 +21,7 @@ class _PedidoScreenState extends State<PedidoScreen> {
   final ApiService apiService = ApiService();
   List<dynamic> productos = [];
   List<Map<String, dynamic>> detalles = [];
-  bool isLoading = true;
+  bool isLoading = false;
 
   @override
   void initState() {
@@ -74,6 +74,10 @@ class _PedidoScreenState extends State<PedidoScreen> {
       );
       return;
     }
+
+    if (isLoading) return;
+    setState(() => isLoading = true);
+
     try {
       final payload = {
         'id_mesa': widget.idMesa,
@@ -100,7 +104,75 @@ class _PedidoScreenState extends State<PedidoScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
+  }
+
+  List<Widget> _buildMenuEjecutivo() {
+    final ejecutivos = productos
+        .where((p) => p['categoria'] == 'ejecutivo')
+        .toList();
+
+    if (ejecutivos.isEmpty) return [];
+
+    return [
+      const Text(
+        "MENÚ EJECUTIVO",
+        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      ),
+      const SizedBox(height: 8),
+      ...ejecutivos.map((producto) {
+        return Card(
+          child: ListTile(
+            title: Text(producto['nombre']),
+            subtitle: Text('\$${producto['precio']}'),
+            trailing: IconButton(
+              icon: const Icon(Icons.add_circle, color: Colors.green),
+              onPressed: () => _agregarDetalle(
+                producto['idProducto'] ?? producto['id_producto'],
+                producto['nombre'],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    ];
+  }
+
+  ///CATEGORÍAS DESPLEGABLES
+  List<Widget> _buildCategorias() {
+    final categorias = productos
+        .where((p) => p['categoria'] != 'ejecutivo')
+        .map((p) => p['categoria'])
+        .toSet()
+        .toList();
+
+    return categorias.map((categoria) {
+      final productosCategoria = productos
+          .where((p) => p['categoria'] == categoria)
+          .toList();
+
+      return ExpansionTile(
+        title: Text(
+          categoria.toString().toUpperCase(),
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        children: productosCategoria.map((producto) {
+          return ListTile(
+            title: Text(producto['nombre']),
+            subtitle: Text('\$${producto['precio']}'),
+            trailing: IconButton(
+              icon: const Icon(Icons.add_circle, color: Colors.green),
+              onPressed: () => _agregarDetalle(
+                producto['idProducto'] ?? producto['id_producto'],
+                producto['nombre'],
+              ),
+            ),
+          );
+        }).toList(),
+      );
+    }).toList();
   }
 
   @override
@@ -118,31 +190,17 @@ class _PedidoScreenState extends State<PedidoScreen> {
               children: [
                 Expanded(
                   flex: 3,
-                  child: ListView.builder(
+                  child: ListView(
                     padding: const EdgeInsets.all(16),
-                    itemCount: productos.length,
-                    itemBuilder: (context, index) {
-                      final producto = productos[index];
-                      return Card(
-                        child: ListTile(
-                          title: Text(producto['nombre'] ?? ''),
-                          subtitle: Text('\$${producto['precio']}'),
-                          trailing: IconButton(
-                            icon: const Icon(
-                              Icons.add_circle,
-                              color: Colors.green,
-                            ),
-                            onPressed: () => _agregarDetalle(
-                              producto['idProducto'] ?? producto['id_producto'],
-                              producto['nombre'],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                    children: [
+                      ..._buildMenuEjecutivo(),
+                      const SizedBox(height: 10),
+                      ..._buildCategorias(),
+                    ],
                   ),
                 ),
                 const Divider(height: 1, thickness: 2),
+
                 Expanded(
                   flex: 2,
                   child: Container(
@@ -244,11 +302,10 @@ class _PedidoScreenState extends State<PedidoScreen> {
 
                                     const SizedBox(height: 8),
 
-                                    /// 🔹 CAMPO DE NOTA BONITO
+                                    /// CAMPO DE NOTA BONITO
                                     TextField(
                                       decoration: InputDecoration(
-                                        hintText:
-                                            'Ej: sin cebolla, término medio...',
+                                        hintText: 'nota...',
                                         filled: true,
                                         fillColor: Colors.grey[100],
                                         contentPadding:
@@ -283,14 +340,23 @@ class _PedidoScreenState extends State<PedidoScreen> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFFB25A45),
                               ),
-                              onPressed: _crearPedido,
-                              child: const Text(
-                                'Crear Pedido',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  color: Colors.white,
-                                ),
-                              ),
+                              onPressed: isLoading ? null : _crearPedido,
+                              child: isLoading
+                                  ? const SizedBox(
+                                      width: 25,
+                                      height: 25,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 3,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Crear Pedido',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        color: Colors.white,
+                                      ),
+                                    ),
                             ),
                           ),
                         ),

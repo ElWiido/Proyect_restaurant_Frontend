@@ -195,40 +195,37 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>> agregarProductoAPedido(
-    int idPedido, {
-    required int idProducto,
-    required int cantidad,
-    String? detalle,
-  }) async {
+  Future<void> agregarProductosLote(
+    int idPedido,
+    List<Map<String, dynamic>> detalles,
+  ) async {
     final url = Uri.parse('$baseUrl/pedidos/$idPedido/productos');
 
-    try {
-      final response = await _client
-          .post(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
+    final payload = {
+      "productos": detalles
+          .map(
+            (d) => {
+              "id_producto": d['id_producto'],
+              "cantidad": d['cantidad'],
+              "detalle": d['detalle'] ?? "",
             },
-            body: jsonEncode({
-              'id_producto': idProducto,
-              'cantidad': cantidad,
-              'detalle': detalle ?? '',
-            }),
           )
-          .timeout(const Duration(seconds: 10));
+          .toList(),
+    };
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return jsonDecode(response.body);
-      } else {
-        throw Exception(
-          'Error al agregar producto: ${response.statusCode} - ${response.body}',
-        );
-      }
-    } catch (e) {
-      print('Error en agregarProductoAPedido: $e');
-      rethrow;
+    final response = await _client.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode(payload),
+    );
+
+    print(response.body);
+
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw Exception("Error agregando lote");
     }
   }
 

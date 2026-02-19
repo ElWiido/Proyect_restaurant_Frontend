@@ -7,6 +7,7 @@ final formatoPesos = NumberFormat.currency(
   locale: 'es_CO',
   symbol: '\$',
   decimalDigits: 0,
+  customPattern: '\u00A4 #,##0',
 );
 
 class PagoScreen extends StatefulWidget {
@@ -54,7 +55,7 @@ class _PagoScreenState extends State<PagoScreen> {
         title: const Text('Editar precio unitario'),
         content: TextField(
           controller: precioController,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          keyboardType: const TextInputType.numberWithOptions(decimal: false),
           decoration: const InputDecoration(
             labelText: 'Nuevo precio',
             prefixText: '\$ ',
@@ -103,9 +104,12 @@ class _PagoScreenState extends State<PagoScreen> {
       setState(() {
         pedido = data;
         isLoading = false;
-        // Si es admin, inicializa el monto editable
+
         if (widget.rol == 'administrador') {
-          montoController.text = _calcularTotal().toStringAsFixed(2);
+          montoController.text = NumberFormat(
+            '#,###',
+            'es_CO',
+          ).format(_calcularTotal());
         }
       });
     } catch (e) {
@@ -137,7 +141,11 @@ class _PagoScreenState extends State<PagoScreen> {
       double monto = _calcularTotal();
       if (widget.rol == 'administrador') {
         final montoInput = double.tryParse(
-          montoController.text.replaceAll(',', '.'),
+          montoController.text
+              .replaceAll('\$', '')
+              .replaceAll('.', '')
+              .replaceAll(',', '.')
+              .trim(),
         );
         if (montoInput != null && montoInput > 0) {
           monto = montoInput;
@@ -313,6 +321,7 @@ class _PagoScreenState extends State<PagoScreen> {
                                     label: const Text('Añadir productos'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: const Color(0xFFB25A45),
+                                      foregroundColor: Colors.white,
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(10),
                                       ),
@@ -457,7 +466,9 @@ class _PagoScreenState extends State<PagoScreen> {
                                             ),
                                           )
                                         : Text(
-                                            '\$${_calcularTotal().toStringAsFixed(2)}',
+                                            formatoPesos.format(
+                                              _calcularTotal(),
+                                            ),
                                             style: const TextStyle(
                                               fontSize: 22,
                                               fontWeight: FontWeight.bold,
@@ -491,15 +502,6 @@ class _PagoScreenState extends State<PagoScreen> {
                                 RadioListTile<String>(
                                   title: const Text('Efectivo'),
                                   value: 'efectivo',
-                                  groupValue: metodoPago,
-                                  activeColor: const Color(0xFFB25A45),
-                                  onChanged: (value) {
-                                    setState(() => metodoPago = value!);
-                                  },
-                                ),
-                                RadioListTile<String>(
-                                  title: const Text('Tarjeta'),
-                                  value: 'tarjeta',
                                   groupValue: metodoPago,
                                   activeColor: const Color(0xFFB25A45),
                                   onChanged: (value) {

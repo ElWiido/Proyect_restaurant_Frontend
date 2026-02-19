@@ -66,9 +66,50 @@ class _DetallePagosScreenState extends State<DetallePagosScreen> {
     return pagos.fold(0, (sum, p) => sum + _parseMonto(p['monto']));
   }
 
+  double _totalPorMetodo(List<Map<String, dynamic>> pagos, String metodo) {
+    return pagos.fold(0, (sum, p) {
+      final m = (p['metodoPago'] ?? p['metodo'] ?? '').toString().toLowerCase();
+
+      if (m == metodo.toLowerCase()) {
+        return sum + _parseMonto(p['monto']);
+      }
+      return sum;
+    });
+  }
+
   String formatMoneda(double value) {
     final formatter = NumberFormat('#,###', 'es_CO');
     return '\$${formatter.format(value)}';
+  }
+
+  Widget _buildMetodoCard(
+    String titulo,
+    double monto,
+    Color color,
+    IconData icon,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(height: 6),
+          Text(
+            titulo,
+            style: TextStyle(fontWeight: FontWeight.bold, color: color),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            formatMoneda(monto),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -114,40 +155,68 @@ class _DetallePagosScreenState extends State<DetallePagosScreen> {
           }
 
           final total = _totalVentas(pagos);
+          final totalEfectivo = _totalPorMetodo(pagos, 'efectivo');
+          final totalTransferencia = _totalPorMetodo(pagos, 'transferencia');
 
           return Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
                 // TOTAL
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade100,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'TOTAL VENTAS',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.green,
+                Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildMetodoCard(
+                            'EFECTIVO',
+                            totalEfectivo,
+                            Colors.green,
+                            Icons.attach_money,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        formatMoneda(total),
-                        style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _buildMetodoCard(
+                            'TRANSFERENCIA',
+                            totalTransferencia,
+                            Colors.blue,
+                            Icons.account_balance,
+                          ),
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade100,
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                    ],
-                  ),
+                      child: Column(
+                        children: [
+                          const Text(
+                            'TOTAL GENERAL',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            formatMoneda(total),
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 20),
 
