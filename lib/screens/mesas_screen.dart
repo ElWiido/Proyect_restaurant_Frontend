@@ -7,6 +7,12 @@ import 'pago_screen.dart';
 import 'login_screen.dart';
 import 'detalle_pagos_screen.dart';
 
+const _primary = Color(0xFFB25A45);
+const _bg = Color(0xFFF7F7F7);
+const _cardBg = Colors.white;
+const _textDark = Color(0xFF1A1A1A);
+const _textMuted = Color(0xFF8A8A8A);
+
 class MesasScreen extends StatefulWidget {
   final int idUsuario;
   final String rol;
@@ -20,10 +26,22 @@ class MesasScreen extends StatefulWidget {
 class _MesasScreenState extends State<MesasScreen> {
   List<dynamic> mesas = [];
   bool isLoading = true;
+
   final ApiService apiService = ApiService();
   final WebSocketService wsService = WebSocketService();
+  final ValueNotifier<double?> totalPagosHoy = ValueNotifier(null);
 
-  ValueNotifier<double?> totalPagosHoy = ValueNotifier(null);
+  late final String _fechaHoy = _calcFecha();
+
+  static String _calcFecha() {
+    final h = DateTime.now().toLocal();
+    return '${h.year.toString().padLeft(4, '0')}-'
+        '${h.month.toString().padLeft(2, '0')}-'
+        '${h.day.toString().padLeft(2, '0')}';
+  }
+
+  static final _milesReg = RegExp(r'\B(?=(\d{3})+(?!\d))');
+  String _miles(int n) => n.toString().replaceAllMapped(_milesReg, (_) => '.');
 
   @override
   void initState() {
@@ -33,342 +51,386 @@ class _MesasScreenState extends State<MesasScreen> {
     _conectarWebSocket();
   }
 
-  // --- Cargar mesas ---
+  @override
+  void dispose() {
+    wsService.disconnect();
+    totalPagosHoy.dispose();
+    super.dispose();
+  }
+
   Future<void> _cargarMesas() async {
     try {
       final data = await apiService.getMesas();
+      if (!mounted) return;
       setState(() {
         mesas = List.from(data)
           ..sort((a, b) {
-            final numA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
-            final numB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
-            return numA.compareTo(numB);
+            final nA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
+            final nB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
+            return nA.compareTo(nB);
           });
         isLoading = false;
       });
-    } catch (e) {
-      print("Error al cargar mesas: $e");
-      setState(() => isLoading = false);
+    } catch (_) {
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
-  // --- Cargar total de pagos ---
   Future<void> _cargarTotalPagos() async {
     if (widget.rol != 'administrador') return;
     try {
-      final hoy = DateTime.now().toLocal();
-      final fecha =
-          '${hoy.year.toString().padLeft(4, '0')}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
-      print("UTC: ${DateTime.now()}");
-      print("LOCAL: ${DateTime.now().toLocal()}");
-      final total = await apiService.getTotalPagos(fecha);
+      final total = await apiService.getTotalPagos(_fechaHoy);
       totalPagosHoy.value = total.toDouble();
-    } catch (e) {
-      print('Error cargando total pagos: $e');
-    }
+    } catch (_) {}
   }
 
-  // --- Conectar WebSocket ---
   void _conectarWebSocket() {
     wsService.connect((data) {
       if (data['event'] == 'mesa_actualizada') {
-        final mesaAct = data['mesa'];
-        final int id = mesaAct['idMesa'] ?? mesaAct['id_mesa'];
+        final m = data['mesa'];
+        final int id = m['idMesa'] ?? m['id_mesa'];
+        if (!mounted) return;
         setState(() {
           final idx = mesas.indexWhere(
-            (m) => (m['idMesa'] ?? m['id_mesa']) == id,
+            (x) => (x['idMesa'] ?? x['id_mesa']) == id,
           );
           if (idx != -1) {
-            mesas[idx]['estado'] = mesaAct['estado'];
-            if (mesaAct['numero'] != null) {
-              mesas[idx]['numero'] = mesaAct['numero'];
-            }
+            mesas[idx]['estado'] = m['estado'];
+            if (m['numero'] != null) mesas[idx]['numero'] = m['numero'];
             mesas.sort((a, b) {
-              final numA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
-              final numB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
-              return numA.compareTo(numB);
+              final nA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
+              final nB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
+              return nA.compareTo(nB);
             });
           }
         });
       }
-
-      // Actualizar total si llega un nuevo pago
       if (widget.rol == 'administrador' && data['event'] == 'pago_completado') {
-        final monto = (data['pago']['monto'] ?? 0).toDouble();
-        totalPagosHoy.value = (totalPagosHoy.value ?? 0) + monto;
+        _cargarTotalPagos();
       }
     });
   }
 
-  Color _colorPorEstado(String estado) {
+  // Color e ícono por estado
+  Color _color(String estado) {
     switch (estado) {
       case 'libre':
-        return Colors.green[400]!;
+        return const Color(0xFF43A047);
       case 'ocupada':
-        return Colors.red[400]!;
+        return const Color(0xFFE53935);
       case 'pendiente':
-        return Colors.orange[400]!;
+        return const Color(0xFFFB8C00);
       default:
         return Colors.grey;
     }
   }
 
-  void _abrirOpcionDrawer(String opcion) async {
+  void _navegar(Map<String, dynamic> mesa) {
+    final id = (mesa['idMesa'] ?? mesa['id_mesa']) is int
+        ? mesa['idMesa'] ?? mesa['id_mesa']
+        : int.parse((mesa['idMesa'] ?? mesa['id_mesa']).toString());
+    final numero = (mesa['numero'] ?? '').toString();
+    final libre = (mesa['estado'] ?? 'libre') == 'libre';
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => libre
+            ? PedidoScreen(
+                idMesa: id,
+                numeroMesa: numero,
+                idUsuario: widget.idUsuario,
+              )
+            : PagoScreen(idMesa: id, numeroMesa: numero, rol: widget.rol),
+      ),
+    ).then((_) => _cargarMesas());
+  }
+
+  void _accionDrawer(String op) async {
     Navigator.pop(context);
-    switch (opcion) {
-      case 'Actualizar':
-        _cargarMesas();
-        _cargarTotalPagos();
-        break;
-
-      case 'Configuración':
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Abrir configuración')));
-        break;
-
-      case 'Cerrar sesión':
-        await SessionManager.logout();
-        if (!mounted) return;
-        // Redirigir a LoginScreen
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-        );
-        break;
+    if (op == 'actualizar') {
+      _cargarMesas();
+      _cargarTotalPagos();
+    } else if (op == 'logout') {
+      await SessionManager.logout();
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+      );
     }
-  }
-
-  @override
-  void dispose() {
-    wsService.disconnect();
-    super.dispose();
-  }
-
-  // --- Formatear con separador de miles ---
-  String formatMiles(int number) {
-    final str = number.toString();
-    final reg = RegExp(r'\B(?=(\d{3})+(?!\d))');
-    return str.replaceAllMapped(reg, (match) => '.');
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDesktop = MediaQuery.of(context).size.width > 800;
-    final crossAxisCount = isDesktop ? 5 : 3;
-    final childAspectRatio = isDesktop ? 1.2 : 0.95;
-
-    if (isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    final isDesktop = MediaQuery.sizeOf(context).width > 800;
 
     return Scaffold(
+      backgroundColor: _bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: _bg,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
+        scrolledUnderElevation: 0,
+        iconTheme: const IconThemeData(color: _textDark),
         title: const Text(
-          "Mesas",
-          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+          'Mesas',
+          style: TextStyle(
+            color: _textDark,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+          ),
         ),
         actions: [
           if (widget.rol == 'administrador')
             Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Center(
-                child: ValueListenableBuilder<double?>(
-                  valueListenable: totalPagosHoy,
-                  builder: (context, value, _) {
-                    if (value == null) {
-                      return const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      );
-                    }
-
-                    return GestureDetector(
-                      onTap: () {
-                        // Abrimos la pantalla de detalle de pagos con la fecha actual
-                        final hoy = DateTime.now();
-                        final fechaStr =
-                            '${hoy.year.toString().padLeft(4, '0')}-'
-                            '${hoy.month.toString().padLeft(2, '0')}-'
-                            '${hoy.day.toString().padLeft(2, '0')}';
-
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => DetallePagosScreen(fecha: fechaStr),
-                          ),
-                        );
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.green.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '\$${formatMiles(value.toInt())}',
-                          style: const TextStyle(
-                            color: Color.fromARGB(255, 0, 0, 0),
-                            fontWeight: FontWeight.bold,
-                            fontSize: 20,
-                          ),
+              padding: const EdgeInsets.only(right: 12),
+              child: ValueListenableBuilder<double?>(
+                valueListenable: totalPagosHoy,
+                builder: (_, value, __) {
+                  if (value == null) {
+                    return const Center(
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: _primary,
                         ),
                       ),
                     );
-                  },
-                ),
+                  }
+                  return GestureDetector(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => DetallePagosScreen(fecha: _fechaHoy),
+                      ),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      // ✅ sin doble $: el símbolo ya está hardcodeado
+                      child: Text(
+                        '\$${_miles(value.toInt())}',
+                        style: const TextStyle(
+                          color: Color(0xFF2E7D32),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
         ],
       ),
+
+      // ── Drawer ────────────────────────────────────────────────────────────
       drawer: Drawer(
-        child: ListView(
+        backgroundColor: _cardBg,
+        child: Column(
           children: [
-            const DrawerHeader(
-              decoration: BoxDecoration(color: Color(0xFFB25A45)),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 56, 20, 24),
+              color: _primary,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(
+                  const Text(
                     'Menú',
-                    style: TextStyle(color: Colors.white, fontSize: 24),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                  SizedBox(height: 8),
+                  const SizedBox(height: 2),
                   Text(
-                    'Opciones disponibles',
-                    style: TextStyle(color: Colors.white70),
+                    widget.rol.toUpperCase(),
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.7),
+                      fontSize: 13,
+                      letterSpacing: 1.1,
+                    ),
                   ),
                 ],
               ),
             ),
-            ListTile(
-              leading: const Icon(Icons.refresh),
-              title: const Text('Actualizar mesas'),
-              onTap: () => _abrirOpcionDrawer('Actualizar'),
+            const SizedBox(height: 8),
+            _drawerItem(
+              Icons.refresh_rounded,
+              'Actualizar mesas',
+              () => _accionDrawer('actualizar'),
             ),
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text('Configuración'),
-              onTap: () => _abrirOpcionDrawer('Configuración'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Cerrar sesión'),
-              onTap: () => _abrirOpcionDrawer('Cerrar sesión'),
+            _drawerItem(
+              Icons.logout_rounded,
+              'Cerrar sesión',
+              () => _accionDrawer('logout'),
+              color: Colors.red[400]!,
             ),
           ],
         ),
       ),
-      body: GridView.builder(
-        padding: const EdgeInsets.all(14),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: crossAxisCount,
-          crossAxisSpacing: 14,
-          mainAxisSpacing: 14,
-          childAspectRatio: childAspectRatio,
-        ),
-        itemCount: mesas.length,
-        itemBuilder: (context, index) {
-          final mesa = mesas[index];
-          final estado = mesa['estado'] ?? 'libre';
-          final libre = estado == 'libre';
-          final colorFondo = _colorPorEstado(estado);
 
-          return GestureDetector(
-            onTap: () {
-              final idMesaInt = (mesa['idMesa'] ?? mesa['id_mesa']) is int
-                  ? (mesa['idMesa'] ?? mesa['id_mesa'])
-                  : int.parse((mesa['idMesa'] ?? mesa['id_mesa']).toString());
-              if (libre) {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => PedidoScreen(
-                      idMesa: idMesaInt,
-                      numeroMesa: (mesa['numero'] ?? '').toString(),
-                      idUsuario: widget.idUsuario,
-                    ),
-                  ),
-                ).then((_) => _cargarMesas());
-              } else {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => PagoScreen(
-                      idMesa: idMesaInt,
-                      numeroMesa: (mesa['numero'] ?? '').toString(),
-                      rol: widget.rol,
-                    ),
-                  ),
-                ).then((_) => _cargarMesas());
-              }
-            },
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+      // ── Body ──────────────────────────────────────────────────────────────
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator(color: _primary))
+          : mesas.isEmpty
+          ? _emptyState()
+          : GridView.builder(
+              padding: const EdgeInsets.all(12),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: isDesktop ? 5 : 3,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+
+                childAspectRatio: isDesktop ? 1.0 : 0.72,
               ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.table_restaurant_sharp,
-                    size: isDesktop ? 42 : 48,
-                    color: colorFondo,
-                  ),
+              cacheExtent: 400,
+              itemCount: mesas.length,
+              itemBuilder: (_, i) => _mesaCard(mesas[i]),
+            ),
+    );
+  }
 
-                  const SizedBox(height: 10),
+  // ── Card de mesa ──────────────────────────────────────────────────────────
+  Widget _mesaCard(Map<String, dynamic> mesa) {
+    final estado = mesa['estado']?.toString() ?? 'libre';
+    final color = _color(estado);
+    final numero = mesa['numero']?.toString() ?? '?';
+    final libre = estado == 'libre';
 
-                  Text(
-                    "Mesa ${mesa['numero']}",
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+    return GestureDetector(
+      onTap: () => _navegar(mesa),
+      child: Container(
+        decoration: BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: libre
+                ? Colors.grey.withOpacity(0.15)
+                : color.withOpacity(0.35),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Ícono con fondo
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(Icons.restaurant, size: 26, color: color),
+            ),
 
-                  const SizedBox(height: 8),
+            const SizedBox(height: 6),
 
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colorFondo.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    child: Text(
-                      estado.toUpperCase(),
-                      style: TextStyle(
-                        color: colorFondo,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                        letterSpacing: 0.6,
-                      ),
-                    ),
-                  ),
-                ],
+            // Número
+            Text(
+              'Mesa $numero',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: _textDark,
               ),
             ),
-          );
-        },
+
+            const SizedBox(height: 4),
+
+            // Badge estado
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                estado.toUpperCase(),
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  Widget _drawerItem(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    Color color = _textDark,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+      leading: Icon(icon, color: color, size: 22),
+      title: Text(
+        label,
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Widget _emptyState() => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.table_restaurant_outlined,
+          size: 52,
+          color: _textMuted.withOpacity(0.35),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'No hay mesas',
+          style: TextStyle(fontSize: 16, color: _textMuted),
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _primary,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Reintentar', style: TextStyle(fontSize: 16)),
+          onPressed: () {
+            setState(() => isLoading = true);
+            _cargarMesas();
+          },
+        ),
+      ],
+    ),
+  );
 }

@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'screens/login_screen.dart';
 import 'screens/mesas_screen.dart';
 import 'services/session_service.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('es', null);
   runApp(const MyApp());
 }
 

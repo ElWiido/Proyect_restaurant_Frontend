@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 import 'package:intl/intl.dart';
 import 'agregar_producto_screen.dart';
@@ -9,6 +10,13 @@ final formatoPesos = NumberFormat.currency(
   decimalDigits: 0,
   customPattern: '\u00A4 #,##0',
 );
+
+// ── Colores centralizados ────────────────────────────────────────────────────
+const _primary = Color(0xFFB25A45);
+const _bg = Color(0xFFF7F7F7);
+const _cardBg = Colors.white;
+const _textDark = Color(0xFF1A1A1A);
+const _textMuted = Color(0xFF8A8A8A);
 
 class PagoScreen extends StatefulWidget {
   final int idMesa;
@@ -28,129 +36,159 @@ class PagoScreen extends StatefulWidget {
 
 class _PagoScreenState extends State<PagoScreen> {
   final ApiService apiService = ApiService();
+
   Map<String, dynamic>? pedido;
   bool isLoading = true;
   bool isProcesando = false;
   String metodoPago = 'efectivo';
-  TextEditingController montoController = TextEditingController();
+
+  // RENDIMIENTO: controller único, no se recrea en cada build
+  final TextEditingController montoController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _cargarPedido();
-    // Inicializar el monto con el total calculado (cuando se cargue el pedido)
+  }
+
+  @override
+  void dispose() {
+    montoController.dispose();
+    super.dispose();
+  }
+
+  ///cálculo extraído, evita re-parsearlo en cada widget build
+  double _calcularTotal() {
+    final detalles = pedido?['detalles'] as List?;
+    if (detalles == null) return 0.0;
+
+    return detalles.fold(0.0, (total, detalle) {
+      final precioRaw =
+          detalle['precioUnitario'] ?? detalle['producto']?['precio'];
+      final cantidadRaw = detalle['cantidad'] ?? 1;
+
+      final precio = precioRaw is num
+          ? precioRaw.toDouble()
+          : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
+
+      final cantidad = cantidadRaw is int
+          ? cantidadRaw
+          : int.tryParse(cantidadRaw.toString()) ?? 1;
+
+      return total + precio * cantidad;
+    });
+  }
+
+  String _formatMonto(double v) => NumberFormat('#,###', 'es_CO').format(v);
+
+  // ── API calls ────────────────────────────────────────────────────────────────
+
+  Future<void> _cargarPedido() async {
+    try {
+      final data = await apiService.getPedidoPorMesa(widget.idMesa);
+      if (!mounted) return;
+      setState(() {
+        pedido = data;
+        isLoading = false;
+        if (widget.rol == 'administrador') {
+          montoController.text = _formatMonto(_calcularTotal());
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isLoading = false);
+      _showSnack('Error al cargar pedido: $e', isError: true);
+    }
   }
 
   Future<void> _editarPrecioDetalle(Map<String, dynamic> detalle) async {
-    final TextEditingController precioController = TextEditingController(
+    final ctrl = TextEditingController(
       text:
           detalle['precio_unitario']?.toString() ??
           detalle['producto']?['precio']?.toString() ??
           '0',
     );
 
-    await showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Editar precio unitario'),
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Editar precio unitario',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
         content: TextField(
-          controller: precioController,
+          controller: ctrl,
           keyboardType: const TextInputType.numberWithOptions(decimal: false),
-          decoration: const InputDecoration(
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          onTap: () => ctrl.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: ctrl.text.length,
+          ),
+          decoration: InputDecoration(
             labelText: 'Nuevo precio',
             prefixText: '\$ ',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              final nuevoPrecio = double.tryParse(
-                precioController.text.replaceAll(',', '.'),
-              );
-
-              if (nuevoPrecio == null || nuevoPrecio <= 0) return;
-
-              try {
-                final int idDetalle = detalle['idDetalle'];
-
-                await apiService.actualizarDetallePedido(
-                  idDetalle,
-                  precioUnitario: nuevoPrecio,
-                );
-
-                Navigator.pop(context);
-                _cargarPedido(); // 🔁 refrescar pedido
-              } catch (e) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error al actualizar precio: $e')),
-                );
-              }
-            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Guardar'),
           ),
         ],
       ),
     );
-  }
 
-  Future<void> _cargarPedido() async {
+    if (confirmed != true) return;
+
+    final nuevoPrecio = double.tryParse(ctrl.text.replaceAll(',', '.'));
+    if (nuevoPrecio == null || nuevoPrecio <= 0) return;
+
     try {
-      final data = await apiService.getPedidoPorMesa(widget.idMesa);
-      setState(() {
-        pedido = data;
-        isLoading = false;
-
-        if (widget.rol == 'administrador') {
-          montoController.text = NumberFormat(
-            '#,###',
-            'es_CO',
-          ).format(_calcularTotal());
-        }
-      });
+      await apiService.actualizarDetallePedido(
+        detalle['idDetalle'] as int,
+        precioUnitario: nuevoPrecio,
+      );
+      _cargarPedido();
     } catch (e) {
-      print('Error cargando pedido: $e');
-      if (!mounted) return;
-      setState(() => isLoading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error al cargar pedido: $e')));
+      _showSnack('Error al actualizar precio: $e', isError: true);
     }
   }
 
   Future<void> _procesarPago() async {
     if (widget.rol != 'administrador') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Solo administradores pueden procesar pagos'),
-        ),
-      );
+      _showSnack('Solo administradores pueden procesar pagos', isError: true);
       return;
     }
-
     if (pedido == null) return;
 
     setState(() => isProcesando = true);
 
     try {
-      // Si el campo monto está vacío o no es válido, usar el total calculado
       double monto = _calcularTotal();
       if (widget.rol == 'administrador') {
-        final montoInput = double.tryParse(
+        final parsed = double.tryParse(
           montoController.text
               .replaceAll('\$', '')
               .replaceAll('.', '')
               .replaceAll(',', '.')
               .trim(),
         );
-        if (montoInput != null && montoInput > 0) {
-          monto = montoInput;
-        }
+        if (parsed != null && parsed > 0) monto = parsed;
       }
+
       final resultado = await apiService.crearPago({
         'id_pedido': pedido!['idPedido'] ?? pedido!['id_pedido'],
         'metodo_pago': metodoPago,
@@ -159,28 +197,75 @@ class _PagoScreenState extends State<PagoScreen> {
 
       if (!mounted) return;
 
-      showDialog(
+      await showDialog(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Pago exitoso'),
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.check_circle,
+                  color: Colors.green,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Text(
+                'Pago exitoso',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Monto: \$${resultado['monto']}'),
-              Text('Método: ${resultado['metodo_pago']}'),
-              const SizedBox(height: 8),
-              const Text(
-                'La mesa ahora está libre',
-                style: TextStyle(color: Colors.green),
+              _infoRow('Monto', '\$${resultado['monto']}'),
+              const SizedBox(height: 4),
+              _infoRow('Método', resultado['metodo_pago']),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.table_restaurant, color: Colors.green, size: 16),
+                    SizedBox(width: 6),
+                    Text(
+                      'Mesa ahora libre',
+                      style: TextStyle(color: Colors.green),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
           actions: [
-            TextButton(
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
               onPressed: () {
-                Navigator.pop(context); // Cerrar diálogo
-                Navigator.pop(context); // Volver a mesas
+                Navigator.pop(ctx);
+                Navigator.pop(context);
               },
               child: const Text('Aceptar'),
             ),
@@ -189,401 +274,642 @@ class _PagoScreenState extends State<PagoScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error al procesar pago: $e')));
+      _showSnack('Error al procesar pago: $e', isError: true);
     } finally {
       if (mounted) setState(() => isProcesando = false);
     }
   }
 
-  double _calcularTotal() {
-    if (pedido == null || pedido!['detalles'] == null) return 0.0;
+  // ── Utilidades UI ────────────────────────────────────────────────────────────
 
-    double total = 0.0;
-
-    for (var detalle in pedido!['detalles']) {
-      final cantidadRaw = detalle['cantidad'] ?? 1;
-
-      double precio = 0.0;
-      int cantidad = 1;
-
-      final precioUnitario = detalle['precioUnitario'];
-
-      if (precioUnitario != null) {
-        if (precioUnitario is String) {
-          precio = double.tryParse(precioUnitario) ?? 0.0;
-        } else if (precioUnitario is num) {
-          precio = precioUnitario.toDouble();
-        }
-      } else {
-        // 🔁 SOLO SI NO EXISTE precio_unitario
-        final precioProducto = detalle['producto']?['precio'];
-        if (precioProducto is String) {
-          precio = double.tryParse(precioProducto) ?? 0.0;
-        } else if (precioProducto is num) {
-          precio = precioProducto.toDouble();
-        }
-      }
-
-      // Normalizar cantidad
-      if (cantidadRaw is int) {
-        cantidad = cantidadRaw;
-      } else if (cantidadRaw is String) {
-        cantidad = int.tryParse(cantidadRaw) ?? 1;
-      }
-
-      total += precio * cantidad;
-    }
-
-    return total;
+  void _showSnack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? Colors.red[400] : Colors.green[600],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
   }
+
+  Widget _infoRow(String label, String value) => Row(
+    children: [
+      Text(
+        '$label: ',
+        style: const TextStyle(color: _textMuted, fontWeight: FontWeight.w500),
+      ),
+      Text(
+        value,
+        style: const TextStyle(fontWeight: FontWeight.w700, color: _textDark),
+      ),
+    ],
+  );
+
+  static const _metodos = [
+    {
+      'valor': 'efectivo',
+      'label': 'Efectivo',
+      'icono': Icons.payments_outlined,
+    },
+    {
+      'valor': 'transferencia',
+      'label': 'Transferencia',
+      'icono': Icons.swap_horiz,
+    },
+    {'valor': 'anotar', 'label': 'Anotar', 'icono': Icons.edit_note},
+  ];
+
+  Widget _buildMetodosPago() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Método de pago',
+          style: TextStyle(
+            fontSize: 19,
+            fontWeight: FontWeight.w700,
+            color: _textDark,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: _metodos.map((m) {
+            final selected = metodoPago == m['valor'];
+            return Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => metodoPago = m['valor'] as String),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: BoxDecoration(
+                    color: selected ? _primary : _bg,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: selected ? _primary : Colors.grey.withOpacity(0.2),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(
+                        m['icono'] as IconData,
+                        color: selected ? Colors.white : _textMuted,
+                        size: 26,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        m['label'] as String,
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: selected ? Colors.white : _textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+        // Banner informativo si selecciona "Anotar"
+        if (metodoPago == 'anotar') ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.amber.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.amber.withOpacity(0.4)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'El pedido quedará registrado como pendiente de pago.',
+                    style: TextStyle(fontSize: 16, color: _textDark),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // ── Detalle de producto ──────────────────────────────────────────────────────
+
+  /// ✅ RENDIMIENTO: extraído como método, evita lambdas pesadas en el build
+  Widget _buildDetalleItem(Map<String, dynamic> detalle) {
+    final puedeEditar = widget.rol == 'administrador' || widget.rol == 'mesero';
+    final producto = detalle['producto'];
+    final precioRaw = detalle['precioUnitario'] ?? producto?['precio'];
+    final cantidadRaw = detalle['cantidad'] ?? 1;
+
+    final precio = precioRaw is num
+        ? precioRaw.toDouble()
+        : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
+
+    final cantidad = cantidadRaw is int
+        ? cantidadRaw
+        : int.tryParse(cantidadRaw.toString()) ?? 1;
+
+    final subtotal = precio * cantidad;
+    final nota = detalle['detalle']?.toString() ?? '';
+
+    return GestureDetector(
+      onTap: puedeEditar ? () => _editarPrecioDetalle(detalle) : null,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.grey.withOpacity(0.12)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.03),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Cantidad badge
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: _primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Center(
+                child: Text(
+                  'x$cantidad',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: _primary,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Nombre + nota
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    producto?['nombre'] ?? 'Producto',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 19,
+                      color: _textDark,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    formatoPesos.format(precio),
+                    style: const TextStyle(fontSize: 17, color: _textMuted),
+                  ),
+                  if (nota.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.sticky_note_2_outlined,
+                          size: 16,
+                          color: _textMuted,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            nota,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              color: _textMuted,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            // Subtotal + editar hint
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  formatoPesos.format(subtotal),
+                  style: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w700,
+                    color: _primary,
+                  ),
+                ),
+                if (puedeEditar)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.edit_outlined,
+                      size: 13,
+                      color: _textMuted,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── BUILD ────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final esAdmin = widget.rol == 'administrador';
-    final puedeEditarPrecio =
-        widget.rol == 'administrador' || widget.rol == 'mesero';
 
     return Scaffold(
+      backgroundColor: _bg,
       appBar: AppBar(
-        title: Text('Pago - Mesa ${widget.numeroMesa}'),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        backgroundColor: _bg,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        leading: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: Container(
+            margin: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.grey.withOpacity(0.15)),
+            ),
+            child: const Icon(
+              Icons.arrow_back_ios_new,
+              size: 16,
+              color: _textDark,
+            ),
+          ),
+        ),
+        title: Column(
+          children: [
+            Text(
+              'Mesa ${widget.numeroMesa}',
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                color: _textDark,
+              ),
+            ),
+            const Text(
+              'Detalle del pedido',
+              style: TextStyle(fontSize: 15, color: _textMuted),
+            ),
+          ],
+        ),
+        centerTitle: true,
       ),
       body: isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: _primary))
           : pedido == null
-          ? const Center(
-              child: Text(
-                'No hay pedido para esta mesa',
-                style: TextStyle(fontSize: 16),
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.receipt_long_outlined,
+                    size: 48,
+                    color: _textMuted.withOpacity(0.4),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'No hay pedido para esta mesa',
+                    style: TextStyle(fontSize: 16, color: _textMuted),
+                  ),
+                ],
               ),
             )
           : Column(
               children: [
+                // ── Lista principal ──────────────────────────────
                 Expanded(
                   child: ListView(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                     children: [
-                      Card(
-                        elevation: 3,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'Pedido #${pedido!['idPedido'] ?? pedido!['id_pedido']}',
-                                    style: const TextStyle(
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: pedido!['estado'] == 'pendiente'
-                                          ? Colors.orange[100]
-                                          : Colors.green[100],
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Text(
-                                      pedido!['estado']
-                                          .toString()
-                                          .toUpperCase(),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: pedido!['estado'] == 'pendiente'
-                                            ? Colors.orange[900]
-                                            : Colors.green[900],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              if (pedido!['estado'] == 'pendiente')
-                                SizedBox(
-                                  width: double.infinity,
-                                  height: 45,
-                                  child: ElevatedButton.icon(
-                                    icon: const Icon(Icons.add),
-                                    label: const Text('Añadir productos'),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFFB25A45),
-                                      foregroundColor: Colors.white,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                    ),
-                                    onPressed: () async {
-                                      await Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => AgregarProductoScreen(
-                                            idPedido:
-                                                pedido!['idPedido'] ??
-                                                pedido!['id_pedido'],
-                                            idMesa: widget.idMesa,
-                                            numeroMesa: widget.numeroMesa,
-                                          ),
-                                        ),
-                                      );
-
-                                      // Recargar pedido al volver
-                                      _cargarPedido();
-                                    },
+                      // Cabecera pedido
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: _cardBg,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.grey.withOpacity(0.12),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Pedido #${pedido!['idPedido'] ?? pedido!['id_pedido']}',
+                                  style: const TextStyle(
+                                    fontSize: 21,
+                                    fontWeight: FontWeight.w700,
+                                    color: _textDark,
                                   ),
                                 ),
-                              const Divider(height: 24),
-                              const Text(
-                                'Productos:',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                              ],
+                            ),
+                            const Spacer(),
+                            _estadoBadge(pedido!['estado']?.toString() ?? ''),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      // Botón añadir productos (solo si pendiente)
+                      if (pedido!['estado'] == 'pendiente') ...[
+                        SizedBox(
+                          width: double.infinity,
+                          height: 46,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.add, size: 20),
+                            label: const Text(
+                              'Añadir productos',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
                               ),
-                              const SizedBox(height: 8),
-                              ...((pedido!['detalles'] ?? []) as List).map((
-                                detalle,
-                              ) {
-                                final producto = detalle['producto'];
-                                final precioRaw =
-                                    detalle['precioUnitario'] ??
-                                    producto?['precio'];
-                                final cantidadRaw = detalle['cantidad'] ?? 1;
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onPressed: () async {
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => AgregarProductoScreen(
+                                    idPedido:
+                                        pedido!['idPedido'] ??
+                                        pedido!['id_pedido'],
+                                    idMesa: widget.idMesa,
+                                    numeroMesa: widget.numeroMesa,
+                                  ),
+                                ),
+                              );
+                              _cargarPedido();
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
 
-                                double precio = 0.0;
-                                int cantidad = 1;
+                      // Label productos
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'PRODUCTOS',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.2,
+                            color: _textMuted,
+                          ),
+                        ),
+                      ),
 
-                                // Normalizar precio
-                                if (precioRaw is String) {
-                                  precio = double.tryParse(precioRaw) ?? 0.0;
-                                } else if (precioRaw is num) {
-                                  precio = precioRaw.toDouble();
-                                }
-                                // Normalizar cantidad
-                                if (cantidadRaw is int) {
-                                  cantidad = cantidadRaw;
-                                } else if (cantidadRaw is String) {
-                                  cantidad = int.tryParse(cantidadRaw) ?? 1;
-                                }
+                      // ✅ RENDIMIENTO: usa método en vez de lambda anidada
+                      ...((pedido!['detalles'] ?? []) as List).map(
+                        (d) => _buildDetalleItem(d as Map<String, dynamic>),
+                      ),
 
-                                final subtotal = precio * cantidad;
-                                return Card(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  child: ListTile(
-                                    onTap: puedeEditarPrecio
-                                        ? () => _editarPrecioDetalle(detalle)
-                                        : null,
-                                    title: Text(
-                                      producto?['nombre'] ?? 'Producto',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    subtitle: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text('Cantidad: $cantidad'),
-                                        Text(
-                                          'Precio unitario: ${formatoPesos.format(precio)}',
-                                        ),
-                                        if (detalle['detalle']?.isNotEmpty ==
-                                            true)
-                                          Text(
-                                            'Nota: ${detalle['detalle']}',
-                                            style: TextStyle(
-                                              color: Colors.grey[600],
-                                            ),
+                      const SizedBox(height: 4),
+
+                      // Total
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: _primary.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: _primary.withOpacity(0.2)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Text(
+                              'Total',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w700,
+                                color: _textDark,
+                              ),
+                            ),
+                            const Spacer(),
+                            esAdmin
+                                ? SizedBox(
+                                    width: 150,
+                                    child: TextField(
+                                      controller: montoController,
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
                                           ),
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.allow(
+                                          RegExp(r'[\d,\.]'),
+                                        ),
                                       ],
-                                    ),
-                                    trailing: Text(
-                                      formatoPesos.format(subtotal),
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                        color: Color(0xFFB25A45),
+                                      textAlign: TextAlign.right,
+                                      decoration: InputDecoration(
+                                        prefixText: '\$ ',
+                                        isDense: true,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              vertical: 8,
+                                              horizontal: 8,
+                                            ),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: _primary.withOpacity(0.4),
+                                          ),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          borderSide: const BorderSide(
+                                            color: _primary,
+                                            width: 2,
+                                          ),
+                                        ),
                                       ),
+                                      style: const TextStyle(
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.w800,
+                                        color: _primary,
+                                      ),
+                                    ),
+                                  )
+                                : Text(
+                                    formatoPesos.format(_calcularTotal()),
+                                    style: const TextStyle(
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.w800,
+                                      color: _primary,
                                     ),
                                   ),
-                                );
-                              }),
-                              const Divider(height: 24),
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF8F0EC),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text(
-                                      'Total:',
-                                      style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                          ],
+                        ),
+                      ),
+
+                      // Métodos de pago (solo admin)
+                      if (esAdmin) ...[
+                        const SizedBox(height: 20),
+                        _buildMetodosPago(),
+                      ],
+
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                ),
+
+                // ── Botón inferior ───────────────────────────────
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  decoration: BoxDecoration(
+                    color: _cardBg,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 10,
+                        offset: const Offset(0, -3),
+                      ),
+                    ],
+                  ),
+                  child: esAdmin
+                      ? SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            onPressed: isProcesando ? null : _procesarPago,
+                            child: isProcesando
+                                ? const SizedBox(
+                                    height: 22,
+                                    width: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: Colors.white,
                                     ),
-                                    esAdmin
-                                        ? SizedBox(
-                                            width: 140,
-                                            child: TextField(
-                                              controller: montoController,
-                                              keyboardType:
-                                                  const TextInputType.numberWithOptions(
-                                                    decimal: true,
-                                                  ),
-                                              decoration: const InputDecoration(
-                                                prefixText: '\$',
-                                                border: OutlineInputBorder(),
-                                                isDense: true,
-                                                contentPadding:
-                                                    EdgeInsets.symmetric(
-                                                      vertical: 8,
-                                                      horizontal: 8,
-                                                    ),
-                                              ),
-                                              style: const TextStyle(
-                                                fontSize: 22,
-                                                fontWeight: FontWeight.bold,
-                                                color: Color(0xFFB25A45),
-                                              ),
-                                            ),
-                                          )
-                                        : Text(
-                                            formatoPesos.format(
-                                              _calcularTotal(),
-                                            ),
-                                            style: const TextStyle(
-                                              fontSize: 22,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFFB25A45),
-                                            ),
-                                          ),
-                                  ],
+                                  )
+                                : Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        metodoPago == 'anotar'
+                                            ? Icons.edit_note
+                                            : Icons.check_circle_outline,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        metodoPago == 'anotar'
+                                            ? 'Anotar Pedido'
+                                            : 'Procesar Pago',
+                                        style: const TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        )
+                      : Container(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 14,
+                            horizontal: 16,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.orange.withOpacity(0.3),
+                            ),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.lock_outline,
+                                color: Colors.orange,
+                                size: 20,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                'No puedes procesar pagos',
+                                style: TextStyle(
+                                  color: Colors.orange,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                      if (esAdmin) ...[
-                        const SizedBox(height: 16),
-                        Card(
-                          elevation: 3,
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Método de pago:',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                RadioListTile<String>(
-                                  title: const Text('Efectivo'),
-                                  value: 'efectivo',
-                                  groupValue: metodoPago,
-                                  activeColor: const Color(0xFFB25A45),
-                                  onChanged: (value) {
-                                    setState(() => metodoPago = value!);
-                                  },
-                                ),
-                                RadioListTile<String>(
-                                  title: const Text('Transferencia'),
-                                  value: 'transferencia',
-                                  groupValue: metodoPago,
-                                  activeColor: const Color(0xFFB25A45),
-                                  onChanged: (value) {
-                                    setState(() => metodoPago = value!);
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
                 ),
-                if (esAdmin)
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 8,
-                          offset: const Offset(0, -2),
-                        ),
-                      ],
-                    ),
-                    child: SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFB25A45),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 2,
-                        ),
-                        onPressed: isProcesando ? null : _procesarPago,
-                        child: isProcesando
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Text(
-                                'Procesar Pago',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  color: Colors.white,
-                                ),
-                              ),
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    child: const Text(
-                      'Solo administradores pueden procesar pagos',
-                      style: TextStyle(
-                        color: Colors.red,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
               ],
             ),
+    );
+  }
+
+  Widget _estadoBadge(String estado) {
+    final isPendiente = estado == 'pendiente';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: isPendiente
+            ? Colors.orange.withOpacity(0.12)
+            : Colors.green.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        estado.toUpperCase(),
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: isPendiente ? Colors.orange[800] : Colors.green[800],
+        ),
+      ),
     );
   }
 }

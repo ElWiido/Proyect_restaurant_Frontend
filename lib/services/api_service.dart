@@ -1,206 +1,130 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 
 class ApiService {
   late String baseUrl;
   final http.Client _client = http.Client();
 
+  // ── ENTORNOS ─────────────────────────────────────────────────────────────────
+
+  //RESTAURANTE (IP local)
+  //static const String _restaurante = 'http://192.168.0.101:3333';
+
+  //CASA — dispositivo físico
+  static const String _casa = 'http://192.168.0.2:3333';
+
+  //CASA — emulador Android
+  static const String _emulador = 'http://10.0.2.2:3333';
+
+  //ACTIVO — cambia esto según dónde estés:
+  // -- RESTAURANTE --
+  //static const String _entornoActivo = _restaurante;
+
+  //CASA (elige automáticamente físico o emulador) --
+  static const String _entornoActivo = _autoDetectar;
+
+  // -- PRODUCCIÓN --
+  // static const String _entornoActivo = _produccion;
+
+  // Constante especial para modo auto (casa)
+  static const String _autoDetectar = 'auto';
+
+  // ─────────────────────────────────────────────────────────────────────────────
+
   ApiService() {
     if (Platform.isAndroid) {
-      // Intenta primero con IP real, si falla usa emulador
-      baseUrl = 'http://192.168.0.2:3333';
-    } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      baseUrl = 'http://localhost:3333';
-    } else if (Platform.isIOS) {
+      baseUrl = _entornoActivo == 'auto' ? _detectarUrl() : _entornoActivo;
+    } else {
       baseUrl = 'http://localhost:3333';
     }
   }
+
+  //Solo se usa cuando _entornoActivo = _autoDetectar (modo casa)
+  String _detectarUrl() {
+    try {
+      final hostname = Platform.localHostname.toLowerCase();
+      final isEmulador =
+          hostname.contains('generic') ||
+          hostname.contains('sdk') ||
+          hostname.contains('emulator');
+      final url = isEmulador ? _emulador : _casa;
+      print('Detectado: ${isEmulador ? "emulador" : "físico"} → $url');
+      return url;
+    } catch (_) {
+      return _casa;
+    }
+  }
+
+  // ── Auth ─────────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> login(String usuario, String password) async {
-    List<String> urls = Platform.isAndroid
-        ? ['http://192.168.0.2:3333', 'http://10.0.2.2:3333']
-        : [baseUrl];
-
-    Exception? lastError;
-
-    for (String url in urls) {
-      try {
-        final response = await _client
-            .post(
-              Uri.parse('$url/login'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-              },
-              body: jsonEncode({
-                'nombre_usuario': usuario,
-                'contrasena': password,
-              }),
-            )
-            .timeout(const Duration(seconds: 5));
-
-        if (response.statusCode == 200) {
-          baseUrl = url;
-          print('Conectado a: $url');
-          return jsonDecode(response.body);
-        }
-      } catch (e) {
-        print('❌ Intento fallido en $url: $e');
-        lastError = Exception('Error en $url: $e');
-      }
-    }
-    throw lastError ?? Exception('No se pudo conectar al servidor');
-  }
-
-  Future<List<dynamic>> getMesas() async {
-    final url = Uri.parse('$baseUrl/mesas');
-    try {
-      final response = await _client
-          .get(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        if (data is Map<String, dynamic> && data['data'] != null) {
-          return data['data'] as List<dynamic>;
-        }
-
-        throw Exception('Estructura de respuesta inválida');
-      } else {
-        throw Exception('Error al cargar mesas: ${response.statusCode}');
-      }
-    } catch (e) {
-      print('Error en getMesas: $e');
-      rethrow;
-    }
-  }
-
-  Future<List<dynamic>> getProductos() async {
-    final url = Uri.parse('$baseUrl/productos');
-    try {
-      final response = await _client
-          .get(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data is Map<String, dynamic> && data['data'] != null) {
-          return data['data'] as List<dynamic>;
-        }
-        return data as List<dynamic>;
-      } else {
-        throw Exception('Error al cargar productos');
-      }
-    } catch (e) {
-      print('Error en getProductos: $e');
-      rethrow;
-    }
-  }
-
-  Future<Map<String, dynamic>> crearPedido(Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/pedidos');
     try {
       final response = await _client
           .post(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: jsonEncode(payload),
+            Uri.parse('$baseUrl/login'),
+            headers: _headers,
+            body: jsonEncode({
+              'nombre_usuario': usuario,
+              'contrasena': password,
+            }),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 5));
 
-      if (response.statusCode == 201 || response.statusCode == 200) {
+      if (response.statusCode == 200) {
         return jsonDecode(response.body);
-      } else {
-        throw Exception('Error al crear pedido: ${response.statusCode}');
       }
+      throw Exception('Credenciales incorrectas');
     } catch (e) {
-      print('Error en crearPedido: $e');
+      print('❌ Error en login: $e');
       rethrow;
     }
+  }
+
+  // ── Mesas ─────────────────────────────────────────────────────────────────────
+
+  Future<List<dynamic>> getMesas() async {
+    final response = await _get('/mesas');
+    final data = jsonDecode(response.body);
+    if (data is Map<String, dynamic> && data['data'] != null) {
+      return data['data'] as List<dynamic>;
+    }
+    throw Exception('Estructura de respuesta inválida');
+  }
+
+  // ── Productos ─────────────────────────────────────────────────────────────────
+
+  Future<List<dynamic>> getProductos() async {
+    final response = await _get('/productos');
+    final data = jsonDecode(response.body);
+    if (data is Map<String, dynamic> && data['data'] != null) {
+      return data['data'] as List<dynamic>;
+    }
+    return data as List<dynamic>;
+  }
+
+  // ── Pedidos ───────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> crearPedido(Map<String, dynamic> payload) async {
+    final response = await _post('/pedidos', payload);
+    return jsonDecode(response.body);
   }
 
   Future<Map<String, dynamic>> getPedidoPorMesa(int idMesa) async {
-    final url = Uri.parse('$baseUrl/pedidos/mesa/$idMesa');
-    try {
-      final response = await _client
-          .get(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else {
-        throw Exception('Error al obtener pedido: ${response.statusCode}');
-      }
-    } catch (e) {
-      print('Error en getPedidoPorMesa: $e');
-      rethrow;
-    }
+    final response = await _get('/pedidos/mesa/$idMesa');
+    return jsonDecode(response.body);
   }
 
-  Future<Map<String, dynamic>> crearPago(Map<String, dynamic> payload) async {
-    final url = Uri.parse('$baseUrl/pagos');
-    try {
-      final response = await _client
-          .post(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else {
-        throw Exception('Error al crear pago: ${response.statusCode}');
-      }
-    } catch (e) {
-      print('Error en crearPago: $e');
-      rethrow;
-    }
-  }
-
-  Future<double> getTotalPagos(String fecha) async {
-    final response = await http.get(Uri.parse('$baseUrl/pagos/date/$fecha'));
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      return (data['total'] ?? 0).toDouble();
-    } else {
-      throw Exception('Error al obtener total de pagos');
-    }
+  Future<Map<String, dynamic>> getPedidoById(int id) async {
+    final response = await _get('/pedido/$id');
+    return jsonDecode(response.body);
   }
 
   Future<void> agregarProductosLote(
     int idPedido,
     List<Map<String, dynamic>> detalles,
   ) async {
-    final url = Uri.parse('$baseUrl/pedidos/$idPedido/productos');
-
     final payload = {
       "productos": detalles
           .map(
@@ -212,32 +136,9 @@ class ApiService {
           )
           .toList(),
     };
-
-    final response = await _client.post(
-      url,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: jsonEncode(payload),
-    );
-
-    print(response.body);
-
+    final response = await _post('/pedidos/$idPedido/productos', payload);
     if (response.statusCode != 200 && response.statusCode != 201) {
-      throw Exception("Error agregando lote");
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> getPagosByDate(String fecha) async {
-    final url = Uri.parse('$baseUrl/pagos/all/$fecha');
-    final response = await http.get(url);
-
-    if (response.statusCode == 200) {
-      final List<dynamic> data = jsonDecode(response.body);
-      return data.cast<Map<String, dynamic>>();
-    } else {
-      throw Exception('Error al cargar los pagos: ${response.body}');
+      throw Exception('Error agregando lote: ${response.body}');
     }
   }
 
@@ -247,42 +148,120 @@ class ApiService {
     int? cantidad,
     String? detalle,
   }) async {
-    final url = Uri.parse('$baseUrl/detalle_pedidos/$idDetalle');
+    final body = <String, dynamic>{};
+    if (precioUnitario != null) body['precio_unitario'] = precioUnitario;
+    if (cantidad != null) body['cantidad'] = cantidad;
+    if (detalle != null) body['detalle'] = detalle;
 
-    final Map<String, dynamic> body = {};
+    final response = await _put('/detalle_pedidos/$idDetalle', body);
+    return jsonDecode(response.body);
+  }
 
-    if (precioUnitario != null) {
-      body['precio_unitario'] = precioUnitario;
-    }
-    if (cantidad != null) {
-      body['cantidad'] = cantidad;
-    }
-    if (detalle != null) {
-      body['detalle'] = detalle;
-    }
+  // ── Pagos ─────────────────────────────────────────────────────────────────────
 
+  Future<Map<String, dynamic>> crearPago(Map<String, dynamic> payload) async {
+    final response = await _post('/pagos', payload);
+    return jsonDecode(response.body);
+  }
+
+  Future<double> getTotalPagos(String fecha) async {
+    final response = await _get('/pagos/date/$fecha');
+    final data = jsonDecode(response.body);
+    return (data['total'] ?? 0).toDouble();
+  }
+
+  Future<List<Map<String, dynamic>>> getPagosByDate(String fecha) async {
+    final response = await _get('/pagos/all/$fecha');
+    final List<dynamic> data = jsonDecode(response.body);
+    return data.cast<Map<String, dynamic>>();
+  }
+
+  // ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+  static const _headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+
+  Future<http.Response> _get(String path) async {
     try {
       final response = await _client
-          .put(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+          .get(Uri.parse('$baseUrl$path'), headers: _headers)
+          .timeout(const Duration(seconds: 5));
+      _checkStatus(response);
+      return response;
+    } on TimeoutException {
+      print('⚠️ Timeout en GET $path, reintentando...');
+      final response = await _client
+          .get(Uri.parse('$baseUrl$path'), headers: _headers)
+          .timeout(const Duration(seconds: 5));
+      _checkStatus(response);
+      return response;
+    } catch (e) {
+      print('❌ GET $path → $e');
+      rethrow;
+    }
+  }
+
+  Future<http.Response> _post(String path, Map<String, dynamic> body) async {
+    try {
+      final response = await _client
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers,
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else {
-        throw Exception(
-          'Error al actualizar detalle: ${response.statusCode} - ${response.body}',
-        );
-      }
+      _checkStatus(response);
+      return response;
+    } on TimeoutException {
+      print('⚠️ Timeout en POST $path, reintentando...');
+      final response = await _client
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      _checkStatus(response);
+      return response;
     } catch (e) {
-      print('Error en actualizarDetallePedido: $e');
+      print('❌ POST $path → $e');
       rethrow;
+    }
+  }
+
+  Future<http.Response> _put(String path, Map<String, dynamic> body) async {
+    try {
+      final response = await _client
+          .put(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      _checkStatus(response);
+      return response;
+    } on TimeoutException {
+      print('⚠️ Timeout en PUT $path, reintentando...');
+      final response = await _client
+          .put(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      _checkStatus(response);
+      return response;
+    } catch (e) {
+      print('❌ PUT $path → $e');
+      rethrow;
+    }
+  }
+
+  void _checkStatus(http.Response response) {
+    if (response.statusCode >= 400) {
+      throw Exception('Error ${response.statusCode}: ${response.body}');
     }
   }
 }
