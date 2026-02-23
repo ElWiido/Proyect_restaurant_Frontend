@@ -111,6 +111,13 @@ class ApiService {
     return jsonDecode(response.body);
   }
 
+  Future<void> cancelarPedido(int idPedido) async {
+    final response = await _delete('/pedidos/$idPedido');
+    if (response.statusCode != 200) {
+      throw Exception('Error al cancelar pedido');
+    }
+  }
+
   Future<Map<String, dynamic>> getPedidoPorMesa(int idMesa) async {
     final response = await _get('/pedidos/mesa/$idMesa');
     return jsonDecode(response.body);
@@ -144,17 +151,34 @@ class ApiService {
 
   Future<Map<String, dynamic>> actualizarDetallePedido(
     int idDetalle, {
+    int? idProducto,
     double? precioUnitario,
     int? cantidad,
     String? detalle,
   }) async {
     final body = <String, dynamic>{};
+    if (idProducto != null) body['id_producto'] = idProducto;
     if (precioUnitario != null) body['precio_unitario'] = precioUnitario;
     if (cantidad != null) body['cantidad'] = cantidad;
-    if (detalle != null) body['detalle'] = detalle;
+    body['detalle'] = detalle ?? "";
 
     final response = await _put('/detalle_pedidos/$idDetalle', body);
     return jsonDecode(response.body);
+  }
+
+  Future<List<dynamic>> getPedidosPendientesPorMesa(int idMesa) async {
+    final response = await _get('/pedidos/mesa/$idMesa/pendientes');
+    final data = jsonDecode(response.body);
+    if (data is List) return data;
+    return [];
+  }
+
+  Future<Map<String, dynamic>> getPedidoPorId(int idPedido) async {
+    final response = await _get('/pedidos/$idPedido');
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Error al obtener pedido');
   }
 
   // ── Pagos ─────────────────────────────────────────────────────────────────────
@@ -255,6 +279,19 @@ class ApiService {
       return response;
     } catch (e) {
       print('❌ PUT $path → $e');
+      rethrow;
+    }
+  }
+
+  Future<http.Response> _delete(String path) async {
+    try {
+      final response = await _client
+          .delete(Uri.parse('$baseUrl$path'), headers: _headers)
+          .timeout(const Duration(seconds: 10));
+      _checkStatus(response);
+      return response;
+    } catch (e) {
+      print('❌ DELETE $path → $e');
       rethrow;
     }
   }

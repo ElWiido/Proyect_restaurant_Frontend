@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 
 const _primary = Color(0xFFB25A45);
@@ -11,12 +12,18 @@ class AgregarProductoScreen extends StatefulWidget {
   final int idPedido;
   final int idMesa;
   final String numeroMesa;
+  final String? infoDomicilio;
+  final bool esDomicilioNuevo;
+  final int? idUsuario;
 
   const AgregarProductoScreen({
     super.key,
     required this.idPedido,
     required this.idMesa,
     required this.numeroMesa,
+    this.infoDomicilio,
+    this.esDomicilioNuevo = false,
+    this.idUsuario,
   });
 
   @override
@@ -29,12 +36,10 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
   List<dynamic> productos = [];
   List<Map<String, dynamic>> detalles = [];
 
-  // ✅ RENDIMIENTO: controllers persistentes por índice
   final Map<int, TextEditingController> _controllers = {};
   bool isLoading = true;
   bool isProcesando = false;
 
-  // ✅ TabController igual que PedidoScreen
   TabController? _tabController;
   List<String> _categorias = [];
 
@@ -58,7 +63,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       final data = await apiService.getProductos();
       if (!mounted) return;
 
-      // Ejecutivo primero, luego el resto — igual que PedidoScreen
       final cats = <String>[];
       if (data.any((p) => p['categoria'] == 'ejecutivo')) {
         cats.add('ejecutivo');
@@ -88,11 +92,112 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       _showSnack('Agrega al menos un producto', isError: false);
       return;
     }
+
+    // ── DOMICILIO NUEVO: pide datos del cliente antes de guardar ──
+    if (widget.esDomicilioNuevo) {
+      final telefonoCtrl = TextEditingController();
+      final direccionCtrl = TextEditingController();
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.delivery_dining, color: _primary, size: 26),
+              SizedBox(width: 10),
+              Text(
+                'Datos del domicilio',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _campoTexto(
+                controller: telefonoCtrl,
+                label: 'Teléfono',
+                icono: Icons.phone_outlined,
+                teclado: TextInputType.phone,
+                formatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+              const SizedBox(height: 14),
+              _campoTexto(
+                controller: direccionCtrl,
+                label: 'Dirección',
+                icono: Icons.location_on_outlined,
+                maxLines: 2,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Confirmar pedido'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) return;
+
+      // Agrega la info del cliente al detalle de cada producto
+      final info = [
+        if (telefonoCtrl.text.trim().isNotEmpty)
+          'Tel: ${telefonoCtrl.text.trim()}',
+        if (direccionCtrl.text.trim().isNotEmpty)
+          'Dir: ${direccionCtrl.text.trim()}',
+      ].join(' | ');
+
+      if (info.isNotEmpty) {
+        for (final d in detalles) {
+          final notaActual = d['detalle']?.toString() ?? '';
+          d['detalle'] = notaActual.isEmpty ? info : '$notaActual | $info';
+        }
+      }
+    }
+
     setState(() => isProcesando = true);
+
     try {
-      await apiService.agregarProductosLote(widget.idPedido, detalles);
+      if (widget.esDomicilioNuevo) {
+        // Crea el pedido con los detalles en un solo llamado
+        await apiService.crearPedido({
+          'id_mesa': widget.idMesa,
+          'id_usuario': widget.idUsuario,
+          'detalles': detalles
+              .map(
+                (d) => {
+                  'id_producto': d['id_producto'],
+                  'cantidad': d['cantidad'],
+                  'detalle': d['detalle'] ?? '',
+                },
+              )
+              .toList(),
+        });
+      } else {
+        await apiService.agregarProductosLote(widget.idPedido, detalles);
+      }
+
       if (!mounted) return;
-      _showSnack('Productos agregados', isError: false);
+      _showSnack(
+        widget.esDomicilioNuevo ? 'Domicilio creado' : 'Productos agregados',
+        isError: false,
+      );
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
@@ -113,7 +218,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
         detalles.add({
           'id_producto': idProducto,
           'nombre': nombre,
-          'detalle': '',
+          'detalle': widget.infoDomicilio ?? '',
           'cantidad': 1,
         });
       }
@@ -138,14 +243,40 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
     );
   }
 
-  // ── Tab label ────────────────────────────────────────────────────────────────
-
   String _labelCategoria(String cat) {
     if (cat == 'ejecutivo') return 'Ejecutivo';
     return cat[0].toUpperCase() + cat.substring(1);
   }
 
-  // ── Lista de productos por categoría (igual que PedidoScreen) ────────────────
+  // ── Campo de texto reutilizable ───────────────────────────────────────────────
+
+  Widget _campoTexto({
+    required TextEditingController controller,
+    required String label,
+    required IconData icono,
+    TextInputType teclado = TextInputType.text,
+    List<TextInputFormatter>? formatters,
+    int maxLines = 1,
+  }) {
+    return TextField(
+      controller: controller,
+      keyboardType: teclado,
+      inputFormatters: formatters,
+      maxLines: maxLines,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icono, color: _textMuted, size: 20),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _primary, width: 2),
+        ),
+        isDense: true,
+      ),
+    );
+  }
+
+  // ── Lista de productos por categoría ─────────────────────────────────────────
 
   Widget _buildProductosList(String categoria) {
     final items = productos.where((p) => p['categoria'] == categoria).toList();
@@ -153,7 +284,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       itemCount: items.length,
-      // ✅ RENDIMIENTO: itemBuilder puro, sin closures anidados en build
       itemBuilder: (_, i) =>
           _productoCard(items[i], isEjecutivo: categoria == 'ejecutivo'),
     );
@@ -302,7 +432,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
               ],
             ),
             const SizedBox(height: 12),
-            // ✅ Builder para ensureVisible igual que PedidoScreen
             Builder(
               builder: (itemContext) => TextField(
                 controller: controller,
@@ -415,7 +544,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
                 color: _textDark,
               ),
             ),
-            // ✅ Muestra conteo dinámico igual que PedidoScreen
             if (totalItems > 0)
               Text(
                 '$totalItems ${totalItems == 1 ? 'item' : 'items'}',
@@ -429,7 +557,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
           ],
         ),
         centerTitle: true,
-        // ✅ TabBar en el AppBar — igual que PedidoScreen
         bottom: _tabController == null
             ? null
             : PreferredSize(
@@ -591,18 +718,20 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
                                           strokeWidth: 2.5,
                                         ),
                                       )
-                                    : const Row(
+                                    : Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.center,
                                         children: [
-                                          Icon(
+                                          const Icon(
                                             Icons.check_circle_outline,
                                             size: 22,
                                           ),
-                                          SizedBox(width: 8),
+                                          const SizedBox(width: 8),
                                           Text(
-                                            'Agregar Productos',
-                                            style: TextStyle(
+                                            widget.esDomicilioNuevo
+                                                ? 'Confirmar Domicilio'
+                                                : 'Agregar Productos',
+                                            style: const TextStyle(
                                               fontSize: 20,
                                               fontWeight: FontWeight.w700,
                                               letterSpacing: 0.3,

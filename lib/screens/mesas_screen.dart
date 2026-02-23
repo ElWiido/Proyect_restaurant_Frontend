@@ -6,6 +6,7 @@ import 'pedido_screen.dart';
 import 'pago_screen.dart';
 import 'login_screen.dart';
 import 'detalle_pagos_screen.dart';
+import 'domicilio_screen.dart'; // ✅ nuevo import
 
 const _primary = Color(0xFFB25A45);
 const _bg = Color(0xFFF7F7F7);
@@ -43,6 +44,13 @@ class _MesasScreenState extends State<MesasScreen> {
   static final _milesReg = RegExp(r'\B(?=(\d{3})+(?!\d))');
   String _miles(int n) => n.toString().replaceAllMapped(_milesReg, (_) => '.');
 
+  // ✅ Detecta si una mesa es domicilio
+  bool _esDomicilio(Map<String, dynamic> mesa) {
+    final numero = (mesa['numero'] ?? '').toString().toLowerCase();
+    final nombre = (mesa['nombre'] ?? '').toString().toLowerCase();
+    return numero == 'domicilio' || nombre == 'domicilio';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -65,6 +73,12 @@ class _MesasScreenState extends State<MesasScreen> {
       setState(() {
         mesas = List.from(data)
           ..sort((a, b) {
+            // Domicilio siempre de primero
+            final aDom = _esDomicilio(a as Map<String, dynamic>);
+            final bDom = _esDomicilio(b as Map<String, dynamic>);
+            if (aDom && !bDom) return -1;
+            if (!aDom && bDom) return 1;
+
             final nA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
             final nB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
             return nA.compareTo(nB);
@@ -98,6 +112,10 @@ class _MesasScreenState extends State<MesasScreen> {
             mesas[idx]['estado'] = m['estado'];
             if (m['numero'] != null) mesas[idx]['numero'] = m['numero'];
             mesas.sort((a, b) {
+              final aDom = _esDomicilio(a as Map<String, dynamic>);
+              final bDom = _esDomicilio(b as Map<String, dynamic>);
+              if (aDom && !bDom) return -1;
+              if (!aDom && bDom) return 1;
               final nA = int.tryParse(a['numero']?.toString() ?? '0') ?? 0;
               final nB = int.tryParse(b['numero']?.toString() ?? '0') ?? 0;
               return nA.compareTo(nB);
@@ -111,7 +129,6 @@ class _MesasScreenState extends State<MesasScreen> {
     });
   }
 
-  // Color e ícono por estado
   Color _color(String estado) {
     switch (estado) {
       case 'libre':
@@ -125,25 +142,69 @@ class _MesasScreenState extends State<MesasScreen> {
     }
   }
 
-  void _navegar(Map<String, dynamic> mesa) {
+  void _navegar(Map<String, dynamic> mesa) async {
     final id = (mesa['idMesa'] ?? mesa['id_mesa']) is int
         ? mesa['idMesa'] ?? mesa['id_mesa']
         : int.parse((mesa['idMesa'] ?? mesa['id_mesa']).toString());
     final numero = (mesa['numero'] ?? '').toString();
     final libre = (mesa['estado'] ?? 'libre') == 'libre';
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => libre
-            ? PedidoScreen(
-                idMesa: id,
-                numeroMesa: numero,
-                idUsuario: widget.idUsuario,
-              )
-            : PagoScreen(idMesa: id, numeroMesa: numero, rol: widget.rol),
+    if (_esDomicilio(mesa)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DomicilioScreen(idMesa: id, rol: widget.rol),
+        ),
+      ).then((_) => _cargarMesas());
+      return;
+    }
+
+    if (libre) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PedidoScreen(
+            idMesa: id,
+            numeroMesa: numero,
+            idUsuario: widget.idUsuario,
+          ),
+        ),
+      ).then((_) => _cargarMesas());
+      return;
+    }
+
+    // Mesa ocupada: buscar el pedido activo primero
+    try {
+      final pedido = await apiService.getPedidoPorMesa(id);
+      final idPedido = pedido['idPedido'] ?? pedido['id_pedido'];
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PagoScreen(
+            idMesa: id,
+            idPedido: idPedido is int
+                ? idPedido
+                : int.parse(idPedido.toString()),
+            numeroMesa: numero,
+            rol: widget.rol,
+          ),
+        ),
+      ).then((_) => _cargarMesas());
+    } catch (e) {
+      _showSnack('Error al cargar pedido: $e', isError: true);
+    }
+  }
+
+  void _showSnack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? Colors.red[400] : Colors.green[600],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-    ).then((_) => _cargarMesas());
+    );
   }
 
   void _accionDrawer(String op) async {
@@ -215,7 +276,6 @@ class _MesasScreenState extends State<MesasScreen> {
                         color: Colors.green.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      // ✅ sin doble $: el símbolo ya está hardcodeado
                       child: Text(
                         '\$${_miles(value.toInt())}',
                         style: const TextStyle(
@@ -232,7 +292,6 @@ class _MesasScreenState extends State<MesasScreen> {
         ],
       ),
 
-      // ── Drawer ────────────────────────────────────────────────────────────
       drawer: Drawer(
         backgroundColor: _cardBg,
         child: Column(
@@ -280,7 +339,6 @@ class _MesasScreenState extends State<MesasScreen> {
         ),
       ),
 
-      // ── Body ──────────────────────────────────────────────────────────────
       body: isLoading
           ? const Center(child: CircularProgressIndicator(color: _primary))
           : mesas.isEmpty
@@ -291,7 +349,6 @@ class _MesasScreenState extends State<MesasScreen> {
                 crossAxisCount: isDesktop ? 5 : 3,
                 crossAxisSpacing: 10,
                 mainAxisSpacing: 10,
-
                 childAspectRatio: isDesktop ? 1.0 : 0.72,
               ),
               cacheExtent: 400,
@@ -301,12 +358,16 @@ class _MesasScreenState extends State<MesasScreen> {
     );
   }
 
-  // ── Card de mesa ──────────────────────────────────────────────────────────
   Widget _mesaCard(Map<String, dynamic> mesa) {
+    final esDom = _esDomicilio(mesa);
     final estado = mesa['estado']?.toString() ?? 'libre';
-    final color = _color(estado);
     final numero = mesa['numero']?.toString() ?? '?';
-    final libre = estado == 'libre';
+
+    // La mesa domicilio siempre usa color azul y ícono propio
+    final color = esDom ? const Color(0xFF1565C0) : _color(estado);
+    final icono = esDom ? Icons.delivery_dining : Icons.restaurant;
+    final label = esDom ? 'Domicilio' : 'Mesa $numero';
+    final badgeText = esDom ? 'DOMICILIO' : estado.toUpperCase();
 
     return GestureDetector(
       onTap: () => _navegar(mesa),
@@ -315,7 +376,9 @@ class _MesasScreenState extends State<MesasScreen> {
           color: _cardBg,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: libre
+            color: esDom
+                ? const Color(0xFF1565C0).withOpacity(0.35)
+                : estado == 'libre'
                 ? Colors.grey.withOpacity(0.15)
                 : color.withOpacity(0.35),
           ),
@@ -330,7 +393,6 @@ class _MesasScreenState extends State<MesasScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Ícono con fondo
             Container(
               width: 48,
               height: 48,
@@ -338,14 +400,11 @@ class _MesasScreenState extends State<MesasScreen> {
                 color: color.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(Icons.restaurant, size: 26, color: color),
+              child: Icon(icono, size: 26, color: color),
             ),
-
             const SizedBox(height: 6),
-
-            // Número
             Text(
-              'Mesa $numero',
+              label,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 16,
@@ -353,10 +412,7 @@ class _MesasScreenState extends State<MesasScreen> {
                 color: _textDark,
               ),
             ),
-
             const SizedBox(height: 4),
-
-            // Badge estado
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
@@ -364,7 +420,7 @@ class _MesasScreenState extends State<MesasScreen> {
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(
-                estado.toUpperCase(),
+                badgeText,
                 style: TextStyle(
                   color: color,
                   fontWeight: FontWeight.w700,

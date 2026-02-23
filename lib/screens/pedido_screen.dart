@@ -29,11 +29,10 @@ class _PedidoScreenState extends State<PedidoScreen>
   List<dynamic> productos = [];
   List<Map<String, dynamic>> detalles = [];
   final Map<int, TextEditingController> _controllers = {};
+  final Map<int, GlobalKey> _keys = {}; // ← GlobalKey por ítem
   bool isLoading = false;
 
-  // ✅ ScrollController explícito para la lista de seleccionados
   final ScrollController _listController = ScrollController();
-
   TabController? _tabController;
   List<String> _categorias = [];
 
@@ -57,9 +56,7 @@ class _PedidoScreenState extends State<PedidoScreen>
       if (!mounted) return;
 
       final cats = <String>[];
-      if (data.any((p) => p['categoria'] == 'ejecutivo')) {
-        cats.add('ejecutivo');
-      }
+      if (data.any((p) => p['categoria'] == 'ejecutivo')) cats.add('ejecutivo');
       final otras = data
           .where((p) => p['categoria'] != 'ejecutivo')
           .map((p) => p['categoria'] as String)
@@ -97,27 +94,20 @@ class _PedidoScreenState extends State<PedidoScreen>
   void _eliminarDetalle(int index) {
     setState(() {
       _controllers.remove(index)?.dispose();
+      _keys.remove(index);
       detalles.removeAt(index);
     });
   }
 
   Future<void> _crearPedido() async {
     if (detalles.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Agrega al menos un producto'),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      );
+      _showSnack('Agrega al menos un producto');
       return;
     }
     if (isLoading) return;
     setState(() => isLoading = true);
     try {
-      final payload = {
+      await apiService.crearPedido({
         'id_mesa': widget.idMesa,
         'id_usuario': widget.idUsuario,
         'detalles': detalles
@@ -129,41 +119,52 @@ class _PedidoScreenState extends State<PedidoScreen>
               },
             )
             .toList(),
-      };
-      await apiService.crearPedido(payload);
+      });
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Pedido creado exitosamente'),
-          backgroundColor: Colors.green[600],
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 1),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      );
+      _showSnack('Pedido creado exitosamente', isSuccess: true);
       Navigator.pop(context);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: Colors.red[400],
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      );
+      _showSnack('Error: $e', isError: true);
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
   }
 
-  String _labelCategoria(String cat) {
-    if (cat == 'ejecutivo') return 'Ejecutivo';
-    return cat[0].toUpperCase() + cat.substring(1);
+  void _showSnack(String msg, {bool isError = false, bool isSuccess = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError
+            ? Colors.red[400]
+            : isSuccess
+            ? Colors.green[600]
+            : null,
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: isSuccess ? 1 : 3),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
   }
+
+  void _scrollToItem(int index) {
+    Future.delayed(const Duration(milliseconds: 300), () {
+      final ctx = _keys[index]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOut,
+          alignment: 0.1, // muestra el ítem cerca del tope visible
+        );
+      }
+    });
+  }
+
+  String _labelCategoria(String cat) => cat == 'ejecutivo'
+      ? 'Ejecutivo'
+      : cat[0].toUpperCase() + cat.substring(1);
+
+  // ── Productos ────────────────────────────────────────────────────────────────
 
   Widget _buildProductosList(String categoria) {
     final items = productos.where((p) => p['categoria'] == categoria).toList();
@@ -224,14 +225,18 @@ class _PedidoScreenState extends State<PedidoScreen>
     );
   }
 
+  // ── Detalle card ─────────────────────────────────────────────────────────────
+
   Widget _buildDetalleCard(int index) {
     final detalle = detalles[index];
     final controller = _controllers.putIfAbsent(
       index,
       () => TextEditingController(text: detalle['detalle']),
     );
+    final key = _keys.putIfAbsent(index, () => GlobalKey());
 
     return Container(
+      key: key, // ← key para Scrollable.ensureVisible
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: _cardBg,
@@ -250,6 +255,7 @@ class _PedidoScreenState extends State<PedidoScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Nombre + eliminar
             Row(
               children: [
                 Expanded(
@@ -276,6 +282,7 @@ class _PedidoScreenState extends State<PedidoScreen>
               ],
             ),
             const SizedBox(height: 12),
+            // Cantidad
             Row(
               children: [
                 const Text(
@@ -314,6 +321,7 @@ class _PedidoScreenState extends State<PedidoScreen>
               ],
             ),
             const SizedBox(height: 12),
+            // Nota
             TextField(
               controller: controller,
               minLines: 1,
@@ -339,30 +347,8 @@ class _PedidoScreenState extends State<PedidoScreen>
                   size: 22,
                 ),
               ),
-              onChanged: (value) {
-                detalle['detalle'] = value;
-                // ✅ scroll al final de la lista al escribir/Enter
-                Future.delayed(const Duration(milliseconds: 150), () {
-                  if (_listController.hasClients) {
-                    _listController.animateTo(
-                      _listController.position.maxScrollExtent,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOut,
-                    );
-                  }
-                });
-              },
-              onTap: () {
-                Future.delayed(const Duration(milliseconds: 300), () {
-                  if (_listController.hasClients) {
-                    _listController.animateTo(
-                      _listController.position.maxScrollExtent,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOut,
-                    );
-                  }
-                });
-              },
+              onChanged: (value) => detalle['detalle'] = value,
+              onTap: () => _scrollToItem(index), // ← scroll preciso al ítem
             ),
           ],
         ),
@@ -391,6 +377,8 @@ class _PedidoScreenState extends State<PedidoScreen>
       ),
     );
   }
+
+  // ── BUILD ────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -480,7 +468,7 @@ class _PedidoScreenState extends State<PedidoScreen>
           ? const SizedBox.shrink()
           : Column(
               children: [
-                // ── MENÚ con tabs ───────────────────────────────────
+                // ── Menú tabs ──────────────────────────────────
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
                   curve: Curves.easeInOut,
@@ -497,7 +485,7 @@ class _PedidoScreenState extends State<PedidoScreen>
 
                 Container(height: 1, color: Colors.grey.withOpacity(0.15)),
 
-                // ── SELECCIONADOS ───────────────────────────────────
+                // ── Seleccionados ──────────────────────────────
                 Expanded(
                   child: Column(
                     children: [
@@ -536,7 +524,6 @@ class _PedidoScreenState extends State<PedidoScreen>
                           ],
                         ),
                       ),
-
                       Expanded(
                         child: detalles.isEmpty
                             ? Center(
@@ -560,7 +547,7 @@ class _PedidoScreenState extends State<PedidoScreen>
                                 ),
                               )
                             : ListView.builder(
-                                controller: _listController, // ✅
+                                controller: _listController,
                                 padding: EdgeInsets.fromLTRB(
                                   16,
                                   0,

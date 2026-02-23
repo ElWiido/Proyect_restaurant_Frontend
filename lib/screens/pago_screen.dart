@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 import 'package:intl/intl.dart';
 import 'agregar_producto_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 final formatoPesos = NumberFormat.currency(
   locale: 'es_CO',
@@ -11,7 +12,6 @@ final formatoPesos = NumberFormat.currency(
   customPattern: '\u00A4 #,##0',
 );
 
-// ── Colores centralizados ────────────────────────────────────────────────────
 const _primary = Color(0xFFB25A45);
 const _bg = Color(0xFFF7F7F7);
 const _cardBg = Colors.white;
@@ -20,12 +20,14 @@ const _textMuted = Color(0xFF8A8A8A);
 
 class PagoScreen extends StatefulWidget {
   final int idMesa;
+  final int idPedido;
   final String numeroMesa;
   final String rol;
 
   const PagoScreen({
     super.key,
     required this.idMesa,
+    required this.idPedido,
     required this.numeroMesa,
     required this.rol,
   });
@@ -42,56 +44,75 @@ class _PagoScreenState extends State<PagoScreen> {
   bool isProcesando = false;
   String metodoPago = 'efectivo';
 
-  // RENDIMIENTO: controller único, no se recrea en cada build
   final TextEditingController montoController = TextEditingController();
+  final FocusNode _montoFocus = FocusNode();
 
   @override
   void initState() {
     super.initState();
+    _montoFocus.addListener(() {
+      if (!_montoFocus.hasFocus) {
+        final parsed = double.tryParse(
+          montoController.text.replaceAll('.', '').replaceAll(',', '.').trim(),
+        );
+        if (parsed != null && parsed > 0) _guardarMontoEditado(parsed);
+      }
+    });
     _cargarPedido();
   }
 
   @override
   void dispose() {
     montoController.dispose();
+    _montoFocus.dispose();
     super.dispose();
   }
 
-  ///cálculo extraído, evita re-parsearlo en cada widget build
+  // ── Cálculos ─────────────────────────────────────────────────────────────────
+
   double _calcularTotal() {
     final detalles = pedido?['detalles'] as List?;
     if (detalles == null) return 0.0;
-
     return detalles.fold(0.0, (total, detalle) {
       final precioRaw =
           detalle['precioUnitario'] ?? detalle['producto']?['precio'];
       final cantidadRaw = detalle['cantidad'] ?? 1;
-
       final precio = precioRaw is num
           ? precioRaw.toDouble()
           : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
-
       final cantidad = cantidadRaw is int
           ? cantidadRaw
           : int.tryParse(cantidadRaw.toString()) ?? 1;
-
       return total + precio * cantidad;
     });
   }
 
   String _formatMonto(double v) => NumberFormat('#,###', 'es_CO').format(v);
 
-  // ── API calls ────────────────────────────────────────────────────────────────
+  // ── API ───────────────────────────────────────────────────────────────────────
 
   Future<void> _cargarPedido() async {
     try {
-      final data = await apiService.getPedidoPorMesa(widget.idMesa);
+      final data = await apiService.getPedidoById(widget.idPedido);
       if (!mounted) return;
+
+      bool fueEditado = false;
+      double delta = 0.0;
+
+      if (widget.rol == 'administrador') {
+        final prefs = await SharedPreferences.getInstance();
+        fueEditado = prefs.getBool('monto_editado_${widget.idMesa}') ?? false;
+        if (fueEditado)
+          delta = prefs.getDouble('monto_delta_${widget.idMesa}') ?? 0.0;
+      }
+
       setState(() {
         pedido = data;
         isLoading = false;
         if (widget.rol == 'administrador') {
-          montoController.text = _formatMonto(_calcularTotal());
+          montoController.text = _formatMonto(
+            fueEditado ? _calcularTotal() + delta : _calcularTotal(),
+          );
         }
       });
     } catch (e) {
@@ -101,93 +122,24 @@ class _PagoScreenState extends State<PagoScreen> {
     }
   }
 
-  Future<void> _editarPrecioDetalle(Map<String, dynamic> detalle) async {
-    final ctrl = TextEditingController(
-      text:
-          detalle['precio_unitario']?.toString() ??
-          detalle['producto']?['precio']?.toString() ??
-          '0',
-    );
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Editar precio unitario',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        content: TextField(
-          controller: ctrl,
-          keyboardType: const TextInputType.numberWithOptions(decimal: false),
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          onTap: () => ctrl.selection = TextSelection(
-            baseOffset: 0,
-            extentOffset: ctrl.text.length,
-          ),
-          decoration: InputDecoration(
-            labelText: 'Nuevo precio',
-            prefixText: '\$ ',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _primary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    final nuevoPrecio = double.tryParse(ctrl.text.replaceAll(',', '.'));
-    if (nuevoPrecio == null || nuevoPrecio <= 0) return;
-
-    try {
-      await apiService.actualizarDetallePedido(
-        detalle['idDetalle'] as int,
-        precioUnitario: nuevoPrecio,
-      );
-      _cargarPedido();
-    } catch (e) {
-      _showSnack('Error al actualizar precio: $e', isError: true);
-    }
-  }
-
   Future<void> _procesarPago() async {
     if (widget.rol != 'administrador') {
       _showSnack('Solo administradores pueden procesar pagos', isError: true);
       return;
     }
     if (pedido == null) return;
-
     setState(() => isProcesando = true);
 
     try {
       double monto = _calcularTotal();
-      if (widget.rol == 'administrador') {
-        final parsed = double.tryParse(
-          montoController.text
-              .replaceAll('\$', '')
-              .replaceAll('.', '')
-              .replaceAll(',', '.')
-              .trim(),
-        );
-        if (parsed != null && parsed > 0) monto = parsed;
-      }
+      final parsed = double.tryParse(
+        montoController.text
+            .replaceAll('\$', '')
+            .replaceAll('.', '')
+            .replaceAll(',', '.')
+            .trim(),
+      );
+      if (parsed != null && parsed > 0) monto = parsed;
 
       final resultado = await apiService.crearPago({
         'id_pedido': pedido!['idPedido'] ?? pedido!['id_pedido'],
@@ -263,7 +215,8 @@ class _PagoScreenState extends State<PagoScreen> {
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
-              onPressed: () {
+              onPressed: () async {
+                await _limpiarMontoGuardado();
                 Navigator.pop(ctx);
                 Navigator.pop(context);
               },
@@ -280,7 +233,304 @@ class _PagoScreenState extends State<PagoScreen> {
     }
   }
 
-  // ── Utilidades UI ────────────────────────────────────────────────────────────
+  // ── Cancelar pedido ───────────────────────────────────────────────────────────
+
+  Future<void> _cancelarPedido() async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.red, size: 24),
+            SizedBox(width: 8),
+            Text(
+              'Cancelar pedido',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        content: const Text(
+          '¿Estás seguro de cancelar este pedido? Esta acción no se puede deshacer.',
+          style: TextStyle(fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No', style: TextStyle(color: _textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí, cancelar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+
+    try {
+      await apiService.cancelarPedido(widget.idPedido);
+      await _limpiarMontoGuardado();
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      _showSnack('Error al cancelar pedido: $e', isError: true);
+    }
+  }
+
+  // ── Editar detalle ────────────────────────────────────────────────────────────
+
+  Future<void> _editarDetalle(Map<String, dynamic> detalle) async {
+    List<dynamic> productos = [];
+    try {
+      productos = await apiService.getProductos();
+    } catch (_) {}
+    if (!mounted) return;
+
+    final idDetalle = detalle['idDetalle'] ?? detalle['id_detalle'];
+    int idProductoSeleccionado =
+        detalle['idProducto'] ?? detalle['producto']?['idProducto'] ?? 0;
+    final notaController = TextEditingController(
+      text: detalle['detalle']?.toString() ?? '',
+    );
+    bool guardando = false;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+          ),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const Text(
+                  'Editar producto',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: _textDark,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (productos.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _bg,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      'No se pudieron cargar los productos',
+                      style: TextStyle(color: _textMuted),
+                    ),
+                  )
+                else
+                  DropdownButtonFormField<int>(
+                    value: idProductoSeleccionado,
+                    isExpanded: true,
+                    decoration: InputDecoration(
+                      labelText: 'Producto',
+                      labelStyle: const TextStyle(color: _textMuted),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: _primary, width: 2),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                    ),
+                    items: productos.map<DropdownMenuItem<int>>((p) {
+                      final id = p['idProducto'] ?? p['id_producto'];
+                      final idInt = id is int
+                          ? id
+                          : int.tryParse(id.toString()) ?? 0;
+                      return DropdownMenuItem<int>(
+                        value: idInt,
+                        child: Text(
+                          '${p['nombre']}  •  ${formatoPesos.format(double.tryParse(p['precio'].toString()) ?? 0)}',
+                          style: const TextStyle(fontSize: 15),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (val) =>
+                        setModal(() => idProductoSeleccionado = val!),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: notaController,
+                  minLines: 1,
+                  maxLines: 3,
+                  style: const TextStyle(fontSize: 16, color: _textDark),
+                  decoration: InputDecoration(
+                    hintText: 'Nota para cocina...',
+                    hintStyle: const TextStyle(color: _textMuted, fontSize: 16),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: _primary, width: 2),
+                    ),
+                    prefixIcon: const Icon(
+                      Icons.edit_note,
+                      color: _textMuted,
+                      size: 22,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _primary,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: guardando
+                        ? null
+                        : () async {
+                            setModal(() => guardando = true);
+                            try {
+                              final productoSeleccionado = productos.firstWhere(
+                                (p) =>
+                                    (p['idProducto'] ?? p['id_producto']) ==
+                                    idProductoSeleccionado,
+                                orElse: () => {},
+                              );
+                              final precioNuevo =
+                                  double.tryParse(
+                                    productoSeleccionado['precio']
+                                            ?.toString() ??
+                                        '0',
+                                  ) ??
+                                  0.0;
+
+                              await apiService.actualizarDetallePedido(
+                                idDetalle is int
+                                    ? idDetalle
+                                    : int.parse(idDetalle.toString()),
+                                idProducto: idProductoSeleccionado,
+                                precioUnitario: precioNuevo,
+                                detalle: notaController.text.trim(),
+                              );
+                              if (ctx.mounted) Navigator.pop(ctx);
+                              await Future.delayed(
+                                const Duration(milliseconds: 300),
+                              );
+                              if (mounted) {
+                                _cargarPedido();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Text('Producto actualizado'),
+                                    backgroundColor: Colors.green[600],
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (ctx.mounted)
+                                setModal(() => guardando = false);
+                              _showSnack(
+                                'Error al actualizar: $e',
+                                isError: true,
+                              );
+                            }
+                          },
+                    child: guardando
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                            ),
+                          )
+                        : const Text(
+                            'Guardar cambios',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Future.delayed(const Duration(milliseconds: 300), () {
+      notaController.dispose();
+    });
+  }
+
+  // ── SharedPreferences ─────────────────────────────────────────────────────────
+
+  Future<void> _guardarMontoEditado(double montoEditado) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      'monto_delta_${widget.idMesa}',
+      montoEditado - _calcularTotal(),
+    );
+    await prefs.setBool('monto_editado_${widget.idMesa}', true);
+  }
+
+  Future<void> _limpiarMontoGuardado() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('monto_delta_${widget.idMesa}');
+    await prefs.remove('monto_editado_${widget.idMesa}');
+  }
+
+  // ── UI helpers ────────────────────────────────────────────────────────────────
 
   void _showSnack(String msg, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -376,7 +626,6 @@ class _PagoScreenState extends State<PagoScreen> {
             );
           }).toList(),
         ),
-        // Banner informativo si selecciona "Anotar"
         if (metodoPago == 'anotar') ...[
           const SizedBox(height: 10),
           Container(
@@ -404,11 +653,9 @@ class _PagoScreenState extends State<PagoScreen> {
     );
   }
 
-  // ── Detalle de producto ──────────────────────────────────────────────────────
+  // ── Detalle item ──────────────────────────────────────────────────────────────
 
-  /// ✅ RENDIMIENTO: extraído como método, evita lambdas pesadas en el build
   Widget _buildDetalleItem(Map<String, dynamic> detalle) {
-    final puedeEditar = widget.rol == 'administrador' || widget.rol == 'mesero';
     final producto = detalle['producto'];
     final precioRaw = detalle['precioUnitario'] ?? producto?['precio'];
     final cantidadRaw = detalle['cantidad'] ?? 1;
@@ -416,127 +663,126 @@ class _PagoScreenState extends State<PagoScreen> {
     final precio = precioRaw is num
         ? precioRaw.toDouble()
         : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
-
     final cantidad = cantidadRaw is int
         ? cantidadRaw
         : int.tryParse(cantidadRaw.toString()) ?? 1;
-
     final subtotal = precio * cantidad;
     final nota = detalle['detalle']?.toString() ?? '';
 
-    return GestureDetector(
-      onTap: puedeEditar ? () => _editarPrecioDetalle(detalle) : null,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: _cardBg,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.withOpacity(0.12)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.withOpacity(0.12)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: _primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
             ),
-          ],
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Cantidad badge
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: _primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Center(
-                child: Text(
-                  'x$cantidad',
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: _primary,
-                  ),
+            child: Center(
+              child: Text(
+                'x$cantidad',
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: _primary,
                 ),
               ),
             ),
-            const SizedBox(width: 12),
-            // Nombre + nota
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    producto?['nombre'] ?? 'Producto',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 19,
-                      color: _textDark,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    formatoPesos.format(precio),
-                    style: const TextStyle(fontSize: 17, color: _textMuted),
-                  ),
-                  if (nota.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.sticky_note_2_outlined,
-                          size: 16,
-                          color: _textMuted,
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            nota,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              color: _textMuted,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            // Subtotal + editar hint
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  formatoPesos.format(subtotal),
+                  producto?['nombre'] ?? 'Producto',
                   style: const TextStyle(
-                    fontSize: 19,
                     fontWeight: FontWeight.w700,
+                    fontSize: 19,
+                    color: _textDark,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  formatoPesos.format(precio),
+                  style: const TextStyle(fontSize: 17, color: _textMuted),
+                ),
+                if (nota.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.sticky_note_2_outlined,
+                        size: 16,
+                        color: _textMuted,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          nota,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: _textMuted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                formatoPesos.format(subtotal),
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w700,
+                  color: _primary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              GestureDetector(
+                onTap: () => _editarDetalle(detalle),
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: _primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.edit_outlined,
+                    size: 16,
                     color: _primary,
                   ),
                 ),
-                if (puedeEditar)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Icon(
-                      Icons.edit_outlined,
-                      size: 13,
-                      color: _textMuted,
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 
-  // ── BUILD ────────────────────────────────────────────────────────────────────
+  // ── BUILD ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -581,6 +827,14 @@ class _PagoScreenState extends State<PagoScreen> {
           ],
         ),
         centerTitle: true,
+        actions: [
+          if (esAdmin)
+            IconButton(
+              icon: const Icon(Icons.delete_outline, color: Colors.red),
+              tooltip: 'Cancelar pedido',
+              onPressed: _cancelarPedido,
+            ),
+        ],
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator(color: _primary))
@@ -604,12 +858,10 @@ class _PagoScreenState extends State<PagoScreen> {
             )
           : Column(
               children: [
-                // ── Lista principal ──────────────────────────────
                 Expanded(
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                     children: [
-                      // Cabecera pedido
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -621,18 +873,13 @@ class _PagoScreenState extends State<PagoScreen> {
                         ),
                         child: Row(
                           children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Pedido #${pedido!['idPedido'] ?? pedido!['id_pedido']}',
-                                  style: const TextStyle(
-                                    fontSize: 21,
-                                    fontWeight: FontWeight.w700,
-                                    color: _textDark,
-                                  ),
-                                ),
-                              ],
+                            Text(
+                              'Pedido #${pedido!['idPedido'] ?? pedido!['id_pedido']}',
+                              style: const TextStyle(
+                                fontSize: 21,
+                                fontWeight: FontWeight.w700,
+                                color: _textDark,
+                              ),
                             ),
                             const Spacer(),
                             _estadoBadge(pedido!['estado']?.toString() ?? ''),
@@ -642,7 +889,6 @@ class _PagoScreenState extends State<PagoScreen> {
 
                       const SizedBox(height: 12),
 
-                      // Botón añadir productos (solo si pendiente)
                       if (pedido!['estado'] == 'pendiente') ...[
                         SizedBox(
                           width: double.infinity,
@@ -684,7 +930,6 @@ class _PagoScreenState extends State<PagoScreen> {
                         const SizedBox(height: 12),
                       ],
 
-                      // Label productos
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8),
                         child: Text(
@@ -698,14 +943,12 @@ class _PagoScreenState extends State<PagoScreen> {
                         ),
                       ),
 
-                      // ✅ RENDIMIENTO: usa método en vez de lambda anidada
                       ...((pedido!['detalles'] ?? []) as List).map(
                         (d) => _buildDetalleItem(d as Map<String, dynamic>),
                       ),
 
                       const SizedBox(height: 4),
 
-                      // Total
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -729,6 +972,7 @@ class _PagoScreenState extends State<PagoScreen> {
                                     width: 150,
                                     child: TextField(
                                       controller: montoController,
+                                      focusNode: _montoFocus,
                                       keyboardType:
                                           const TextInputType.numberWithOptions(
                                             decimal: true,
@@ -784,7 +1028,6 @@ class _PagoScreenState extends State<PagoScreen> {
                         ),
                       ),
 
-                      // Métodos de pago (solo admin)
                       if (esAdmin) ...[
                         const SizedBox(height: 20),
                         _buildMetodosPago(),
@@ -795,7 +1038,6 @@ class _PagoScreenState extends State<PagoScreen> {
                   ),
                 ),
 
-                // ── Botón inferior ───────────────────────────────
                 Container(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   decoration: BoxDecoration(
