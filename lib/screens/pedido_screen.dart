@@ -29,10 +29,8 @@ class _PedidoScreenState extends State<PedidoScreen>
   List<dynamic> productos = [];
   List<Map<String, dynamic>> detalles = [];
   final Map<int, TextEditingController> _controllers = {};
-  final Map<int, GlobalKey> _keys = {}; // ← GlobalKey por ítem
   bool isLoading = false;
 
-  final ScrollController _listController = ScrollController();
   TabController? _tabController;
   List<String> _categorias = [];
 
@@ -45,10 +43,11 @@ class _PedidoScreenState extends State<PedidoScreen>
   @override
   void dispose() {
     _tabController?.dispose();
-    _listController.dispose();
     for (final c in _controllers.values) c.dispose();
     super.dispose();
   }
+
+  // ── API ───────────────────────────────────────────────────────────────────────
 
   Future<void> _cargarProductos() async {
     try {
@@ -56,13 +55,18 @@ class _PedidoScreenState extends State<PedidoScreen>
       if (!mounted) return;
 
       final cats = <String>[];
-      if (data.any((p) => p['categoria'] == 'ejecutivo')) cats.add('ejecutivo');
+      if (data.any((p) => p['categoria'] == 'ejecutivo')) {
+        cats.add('ejecutivo');
+      }
       final otras = data
           .where((p) => p['categoria'] != 'ejecutivo')
           .map((p) => p['categoria'] as String)
           .toSet()
           .toList();
       cats.addAll(otras);
+
+      // ✅ FIX 1: dispose FUERA de setState
+      _tabController?.dispose();
 
       setState(() {
         productos = data;
@@ -74,6 +78,57 @@ class _PedidoScreenState extends State<PedidoScreen>
       if (mounted) setState(() => isLoading = false);
     }
   }
+
+  Future<void> _crearPedido() async {
+    if (detalles.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Agrega al menos un producto'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
+      return;
+    }
+    if (isLoading) return;
+    setState(() => isLoading = true);
+    try {
+      final payload = {
+        'id_mesa': widget.idMesa,
+        'id_usuario': widget.idUsuario,
+        'detalles': detalles
+            .map(
+              (d) => {
+                'id_producto': d['id_producto'],
+                'detalle': d['detalle'],
+                'cantidad': d['cantidad'],
+              },
+            )
+            .toList(),
+      };
+      await apiService.crearPedido(payload);
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red[400],
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
   void _agregarDetalle(int idProducto, String nombre) {
     setState(() {
@@ -93,79 +148,44 @@ class _PedidoScreenState extends State<PedidoScreen>
 
   void _eliminarDetalle(int index) {
     setState(() {
-      _controllers.remove(index)?.dispose();
-      _keys.remove(index);
+      final idProducto = detalles[index]['id_producto'] as int;
+      _controllers.remove(idProducto)?.dispose();
       detalles.removeAt(index);
     });
   }
 
-  Future<void> _crearPedido() async {
-    if (detalles.isEmpty) {
-      _showSnack('Agrega al menos un producto');
-      return;
-    }
-    if (isLoading) return;
-    setState(() => isLoading = true);
-    try {
-      await apiService.crearPedido({
-        'id_mesa': widget.idMesa,
-        'id_usuario': widget.idUsuario,
-        'detalles': detalles
-            .map(
-              (d) => {
-                'id_producto': d['id_producto'],
-                'detalle': d['detalle'],
-                'cantidad': d['cantidad'],
-              },
-            )
-            .toList(),
-      });
-      if (!mounted) return;
-      _showSnack('Pedido creado exitosamente', isSuccess: true);
-      Navigator.pop(context);
-    } catch (e) {
-      _showSnack('Error: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
+  // ── Modal de nota ─────────────────────────────────────────────────────────────
+  Future<void> _abrirNotaDialog(Map<String, dynamic> detalle) async {
+    // ✅ FIX DEFINITIVO: usamos variable String en lugar de TextEditingController
+    // Esto evita completamente el problema de controller disposed durante
+    // animaciones del teclado (IME_INSETS_HIDE_ANIMATION)
+    String textoTemporal = detalle['detalle'] as String;
 
-  void _showSnack(String msg, {bool isError = false, bool isSuccess = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: isError
-            ? Colors.red[400]
-            : isSuccess
-            ? Colors.green[600]
-            : null,
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: isSuccess ? 1 : 3),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _NotaModal(
+        nombreProducto: detalle['nombre'] as String,
+        textoInicial: textoTemporal,
+        onGuardar: (texto) {
+          textoTemporal = texto;
+          Navigator.pop(ctx);
+        },
       ),
     );
+
+    // Actualiza el padre con el texto guardado
+    if (mounted) setState(() => detalle['detalle'] = textoTemporal);
   }
 
-  void _scrollToItem(int index) {
-    Future.delayed(const Duration(milliseconds: 300), () {
-      final ctx = _keys[index]?.currentContext;
-      if (ctx != null) {
-        Scrollable.ensureVisible(
-          ctx,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeOut,
-          alignment: 0.1, // muestra el ítem cerca del tope visible
-        );
-      }
-    });
+  // ── Tab label ─────────────────────────────────────────────────────────────────
+  String _labelCategoria(String cat) {
+    if (cat == 'ejecutivo') return 'Ejecutivo';
+    return cat[0].toUpperCase() + cat.substring(1);
   }
 
-  String _labelCategoria(String cat) => cat == 'ejecutivo'
-      ? 'Ejecutivo'
-      : cat[0].toUpperCase() + cat.substring(1);
-
-  // ── Productos ────────────────────────────────────────────────────────────────
-
+  // ── Lista de productos por categoría ─────────────────────────────────────────
   Widget _buildProductosList(String categoria) {
     final items = productos.where((p) => p['categoria'] == categoria).toList();
     return ListView.builder(
@@ -176,6 +196,7 @@ class _PedidoScreenState extends State<PedidoScreen>
     );
   }
 
+  // ── Tarjeta de producto ───────────────────────────────────────────────────────
   Widget _productoCard(dynamic producto, {bool isEjecutivo = false}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -225,18 +246,25 @@ class _PedidoScreenState extends State<PedidoScreen>
     );
   }
 
-  // ── Detalle card ─────────────────────────────────────────────────────────────
-
+  // ── Card de detalle seleccionado ──────────────────────────────────────────────
   Widget _buildDetalleCard(int index) {
     final detalle = detalles[index];
+    final idProducto = detalle['id_producto'] as int;
+    final textoActual = detalle['detalle'] as String;
+
+    // ✅ FIX 3: No reutilizar controladores disposed — solo para sync visual
     final controller = _controllers.putIfAbsent(
-      index,
-      () => TextEditingController(text: detalle['detalle']),
+      idProducto,
+      () => TextEditingController(text: textoActual),
     );
-    final key = _keys.putIfAbsent(index, () => GlobalKey());
+    if (controller.text != textoActual) {
+      controller.value = controller.value.copyWith(
+        text: textoActual,
+        selection: TextSelection.collapsed(offset: textoActual.length),
+      );
+    }
 
     return Container(
-      key: key, // ← key para Scrollable.ensureVisible
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: _cardBg,
@@ -255,7 +283,6 @@ class _PedidoScreenState extends State<PedidoScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Nombre + eliminar
             Row(
               children: [
                 Expanded(
@@ -282,7 +309,6 @@ class _PedidoScreenState extends State<PedidoScreen>
               ],
             ),
             const SizedBox(height: 12),
-            // Cantidad
             Row(
               children: [
                 const Text(
@@ -321,34 +347,45 @@ class _PedidoScreenState extends State<PedidoScreen>
               ],
             ),
             const SizedBox(height: 12),
-            // Nota
-            TextField(
-              controller: controller,
-              minLines: 1,
-              maxLines: 3,
-              keyboardType: TextInputType.multiline,
-              style: const TextStyle(fontSize: 17, color: _textDark),
-              decoration: InputDecoration(
-                hintText: 'Nota para cocina...',
-                hintStyle: const TextStyle(color: _textMuted, fontSize: 17),
-                filled: true,
-                fillColor: _bg,
-                contentPadding: const EdgeInsets.symmetric(
+            // Botón de nota
+            GestureDetector(
+              onTap: () => _abrirNotaDialog(detalle),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
                   horizontal: 14,
-                  vertical: 2,
+                  vertical: 12,
                 ),
-                border: OutlineInputBorder(
+                decoration: BoxDecoration(
+                  color: _bg,
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
                 ),
-                prefixIcon: const Icon(
-                  Icons.edit_note,
-                  color: _textMuted,
-                  size: 22,
+                child: Row(
+                  children: [
+                    const Icon(Icons.edit_note, color: _textMuted, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        textoActual.isEmpty
+                            ? 'Agregar nota para cocina...'
+                            : textoActual,
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: textoActual.isEmpty ? _textMuted : _textDark,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (textoActual.isNotEmpty)
+                      const Icon(
+                        Icons.chevron_right,
+                        color: _textMuted,
+                        size: 20,
+                      ),
+                  ],
                 ),
               ),
-              onChanged: (value) => detalle['detalle'] = value,
-              onTap: () => _scrollToItem(index), // ← scroll preciso al ítem
             ),
           ],
         ),
@@ -378,7 +415,7 @@ class _PedidoScreenState extends State<PedidoScreen>
     );
   }
 
-  // ── BUILD ────────────────────────────────────────────────────────────────────
+  // ── BUILD ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -386,8 +423,6 @@ class _PedidoScreenState extends State<PedidoScreen>
       0,
       (s, d) => s + (d['cantidad'] as int),
     );
-    final keyboardH = MediaQuery.of(context).viewInsets.bottom;
-    final kbOpen = keyboardH > 0;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -468,13 +503,11 @@ class _PedidoScreenState extends State<PedidoScreen>
           ? const SizedBox.shrink()
           : Column(
               children: [
-                // ── Menú tabs ──────────────────────────────────
+                // ── Menú tabs ───────────────────────────────────
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
                   curve: Curves.easeInOut,
-                  height: kbOpen
-                      ? MediaQuery.of(context).size.height * 0.18
-                      : MediaQuery.of(context).size.height * 0.42,
+                  height: MediaQuery.of(context).size.height * 0.42,
                   child: TabBarView(
                     controller: _tabController,
                     children: _categorias
@@ -485,7 +518,7 @@ class _PedidoScreenState extends State<PedidoScreen>
 
                 Container(height: 1, color: Colors.grey.withOpacity(0.15)),
 
-                // ── Seleccionados ──────────────────────────────
+                // ── Seleccionados ────────────────────────────────
                 Expanded(
                   child: Column(
                     children: [
@@ -524,6 +557,7 @@ class _PedidoScreenState extends State<PedidoScreen>
                           ],
                         ),
                       ),
+
                       Expanded(
                         child: detalles.isEmpty
                             ? Center(
@@ -547,12 +581,11 @@ class _PedidoScreenState extends State<PedidoScreen>
                                 ),
                               )
                             : ListView.builder(
-                                controller: _listController,
-                                padding: EdgeInsets.fromLTRB(
+                                padding: const EdgeInsets.fromLTRB(
                                   16,
                                   0,
                                   16,
-                                  keyboardH + 8,
+                                  8,
                                 ),
                                 itemCount: detalles.length,
                                 itemBuilder: (_, i) => _buildDetalleCard(i),
@@ -560,57 +593,48 @@ class _PedidoScreenState extends State<PedidoScreen>
                       ),
 
                       // Botón confirmar
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeInOut,
-                        height: kbOpen ? 0 : 52 + 24,
-                        child: SingleChildScrollView(
-                          physics: const NeverScrollableScrollPhysics(),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                            child: SizedBox(
-                              width: double.infinity,
-                              height: 52,
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _primary,
-                                  foregroundColor: Colors.white,
-                                  elevation: 0,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                ),
-                                onPressed: isLoading ? null : _crearPedido,
-                                child: isLoading
-                                    ? const SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          color: Colors.white,
-                                          strokeWidth: 2.5,
-                                        ),
-                                      )
-                                    : const Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          Icon(
-                                            Icons.check_circle_outline,
-                                            size: 22,
-                                          ),
-                                          SizedBox(width: 8),
-                                          Text(
-                                            'Confirmar Pedido',
-                                            style: TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                              letterSpacing: 0.3,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
                               ),
                             ),
+                            onPressed: isLoading ? null : _crearPedido,
+                            child: isLoading
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2.5,
+                                    ),
+                                  )
+                                : const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.check_circle_outline,
+                                        size: 22,
+                                      ),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Confirmar Pedido',
+                                        style: TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 0.3,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                           ),
                         ),
                       ),
@@ -619,6 +643,148 @@ class _PedidoScreenState extends State<PedidoScreen>
                 ),
               ],
             ),
+    );
+  }
+}
+
+// ── Modal de nota como StatefulWidget independiente ───────────────────────────
+// Al ser un StatefulWidget propio, el TextEditingController vive y muere
+// dentro de su propio ciclo de vida, completamente aislado del padre.
+// Esto elimina el error "TextEditingController used after being disposed"
+// causado por las animaciones IME_INSETS_HIDE_ANIMATION de Android.
+class _NotaModal extends StatefulWidget {
+  final String nombreProducto;
+  final String textoInicial;
+  final void Function(String texto) onGuardar;
+
+  const _NotaModal({
+    required this.nombreProducto,
+    required this.textoInicial,
+    required this.onGuardar,
+  });
+
+  @override
+  State<_NotaModal> createState() => _NotaModalState();
+}
+
+class _NotaModalState extends State<_NotaModal> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.textoInicial);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Título
+            Row(
+              children: [
+                const Icon(Icons.edit_note, color: _primary, size: 24),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.nombreProducto,
+                    style: const TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w700,
+                      color: _textDark,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Nota para cocina',
+              style: TextStyle(fontSize: 15, color: _textMuted),
+            ),
+            const SizedBox(height: 16),
+
+            // ✅ TextField con altura fija — no empuja el botón al crecer
+            SizedBox(
+              height: 120,
+              child: TextField(
+                controller: _ctrl,
+                autofocus: true,
+                maxLines: null,
+                expands: true,
+                keyboardType: TextInputType.multiline,
+                textAlignVertical: TextAlignVertical.top,
+                style: const TextStyle(fontSize: 17, color: _textDark),
+                decoration: InputDecoration(
+                  hintText: 'Ej: sin cebolla, término medio...',
+                  hintStyle: const TextStyle(color: _textMuted, fontSize: 16),
+                  filled: true,
+                  fillColor: _bg,
+                  contentPadding: const EdgeInsets.all(14),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ✅ Botón siempre visible, no se mueve
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.check, size: 20),
+                label: const Text(
+                  'Guardar nota',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                onPressed: () => widget.onGuardar(_ctrl.text),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

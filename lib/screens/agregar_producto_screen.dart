@@ -12,7 +12,6 @@ class AgregarProductoScreen extends StatefulWidget {
   final int idPedido;
   final int idMesa;
   final String numeroMesa;
-  final String? infoDomicilio;
   final bool esDomicilioNuevo;
   final int? idUsuario;
 
@@ -21,7 +20,6 @@ class AgregarProductoScreen extends StatefulWidget {
     required this.idPedido,
     required this.idMesa,
     required this.numeroMesa,
-    this.infoDomicilio,
     this.esDomicilioNuevo = false,
     this.idUsuario,
   });
@@ -34,9 +32,9 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
     with SingleTickerProviderStateMixin {
   final ApiService apiService = ApiService();
   List<dynamic> productos = [];
+  List<dynamic> todosLosProductos = []; // incluye "Domicilio"
   List<Map<String, dynamic>> detalles = [];
 
-  final Map<int, TextEditingController> _controllers = {};
   bool isLoading = true;
   bool isProcesando = false;
 
@@ -52,7 +50,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
   @override
   void dispose() {
     _tabController?.dispose();
-    for (final c in _controllers.values) c.dispose();
     super.dispose();
   }
 
@@ -63,11 +60,19 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       final data = await apiService.getProductos();
       if (!mounted) return;
 
+      // Guardar todos para buscar "Domicilio" al crear pedido
+      todosLosProductos = data;
+
+      // Excluir el producto "Domicilio" de la lista visible al mesero
+      final productosVisibles = data
+          .where((p) => (p['nombre'] as String).toLowerCase() != 'domicilio')
+          .toList();
+
       final cats = <String>[];
-      if (data.any((p) => p['categoria'] == 'ejecutivo')) {
+      if (productosVisibles.any((p) => p['categoria'] == 'ejecutivo')) {
         cats.add('ejecutivo');
       }
-      final otras = data
+      final otras = productosVisibles
           .where((p) => p['categoria'] != 'ejecutivo')
           .map((p) => p['categoria'] as String)
           .toSet()
@@ -75,7 +80,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       cats.addAll(otras);
 
       setState(() {
-        productos = data;
+        productos = productosVisibles;
         _categorias = cats;
         isLoading = false;
         _tabController = TabController(length: cats.length, vsync: this);
@@ -93,117 +98,81 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       return;
     }
 
-    // ── DOMICILIO NUEVO: pide datos del cliente antes de guardar ──
     if (widget.esDomicilioNuevo) {
-      final telefonoCtrl = TextEditingController();
-      final direccionCtrl = TextEditingController();
-
-      final confirmed = await showDialog<bool>(
+      // 1. Mostrar modal de datos del cliente ANTES de crear el pedido
+      final datosCliente = await showModalBottomSheet<Map<String, String>>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.delivery_dining, color: _primary, size: 26),
-              SizedBox(width: 10),
-              Text(
-                'Datos del domicilio',
-                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
-              ),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _campoTexto(
-                controller: telefonoCtrl,
-                label: 'Teléfono',
-                icono: Icons.phone_outlined,
-                teclado: TextInputType.phone,
-                formatters: [FilteringTextInputFormatter.digitsOnly],
-              ),
-              const SizedBox(height: 14),
-              _campoTexto(
-                controller: direccionCtrl,
-                label: 'Dirección',
-                icono: Icons.location_on_outlined,
-                maxLines: 2,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancelar'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primary,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Confirmar pedido'),
-            ),
-          ],
-        ),
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => const _DatosClienteModal(),
       );
 
-      if (confirmed != true) return;
+      if (!mounted) return;
+      if (datosCliente == null) return; // canceló
 
-      // Agrega la info del cliente al detalle de cada producto
-      final info = [
-        if (telefonoCtrl.text.trim().isNotEmpty)
-          'Tel: ${telefonoCtrl.text.trim()}',
-        if (direccionCtrl.text.trim().isNotEmpty)
-          'Dir: ${direccionCtrl.text.trim()}',
-      ].join(' | ');
+      final telefono = datosCliente['telefono'] ?? '';
+      final direccion = datosCliente['direccion'] ?? '';
+      final notaDomicilio = [
+        if (telefono.isNotEmpty) 'Tel: $telefono',
+        if (direccion.isNotEmpty) 'Dir: $direccion',
+      ].join('\n');
 
-      if (info.isNotEmpty) {
-        for (final d in detalles) {
-          final notaActual = d['detalle']?.toString() ?? '';
-          d['detalle'] = notaActual.isEmpty ? info : '$notaActual | $info';
-        }
-      }
-    }
+      setState(() => isProcesando = true);
 
-    setState(() => isProcesando = true);
+      try {
+        // 2. Buscar id del producto "Domicilio"
+        final prodDomicilio = todosLosProductos.firstWhere(
+          (p) => (p['nombre'] as String).toLowerCase() == 'domicilio',
+          orElse: () => null,
+        );
+        final idProductoDomicilio =
+            prodDomicilio?['idProducto'] ?? prodDomicilio?['id_producto'];
 
-    try {
-      if (widget.esDomicilioNuevo) {
-        // Crea el pedido con los detalles en un solo llamado
+        // 3. Una sola llamada: producto Domicilio + productos del pedido
+        final detallesFinales = [
+          if (idProductoDomicilio != null && notaDomicilio.isNotEmpty)
+            {
+              'id_producto': idProductoDomicilio,
+              'cantidad': 1,
+              'detalle': notaDomicilio,
+            },
+          ...detalles.map(
+            (d) => {
+              'id_producto': d['id_producto'],
+              'cantidad': d['cantidad'],
+              'detalle': d['detalle'] ?? '',
+            },
+          ),
+        ];
+
         await apiService.crearPedido({
           'id_mesa': widget.idMesa,
           'id_usuario': widget.idUsuario,
-          'detalles': detalles
-              .map(
-                (d) => {
-                  'id_producto': d['id_producto'],
-                  'cantidad': d['cantidad'],
-                  'detalle': d['detalle'] ?? '',
-                },
-              )
-              .toList(),
+          'detalles': detallesFinales,
         });
-      } else {
-        await apiService.agregarProductosLote(widget.idPedido, detalles);
-      }
 
-      if (!mounted) return;
-      _showSnack(
-        widget.esDomicilioNuevo ? 'Domicilio creado' : 'Productos agregados',
-        isError: false,
-      );
-      Navigator.pop(context, true);
-    } catch (e) {
-      if (!mounted) return;
-      _showSnack('Error: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => isProcesando = false);
+        if (!mounted) return;
+        _showSnack('Domicilio creado', isError: false);
+        Navigator.pop(context);
+      } catch (e) {
+        if (!mounted) return;
+        _showSnack('Error: $e', isError: true);
+      } finally {
+        if (mounted) setState(() => isProcesando = false);
+      }
+    } else {
+      setState(() => isProcesando = true);
+      try {
+        await apiService.agregarProductosLote(widget.idPedido, detalles);
+        if (!mounted) return;
+        _showSnack('Productos agregados', isError: false);
+        Navigator.pop(context, true);
+      } catch (e) {
+        if (!mounted) return;
+        _showSnack('Error: $e', isError: true);
+      } finally {
+        if (mounted) setState(() => isProcesando = false);
+      }
     }
   }
 
@@ -218,7 +187,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
         detalles.add({
           'id_producto': idProducto,
           'nombre': nombre,
-          'detalle': widget.infoDomicilio ?? '',
+          'detalle': '',
           'cantidad': 1,
         });
       }
@@ -226,10 +195,27 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
   }
 
   void _eliminarDetalle(int index) {
-    setState(() {
-      _controllers.remove(index)?.dispose();
-      detalles.removeAt(index);
-    });
+    setState(() => detalles.removeAt(index));
+  }
+
+  Future<void> _abrirNotaDialog(Map<String, dynamic> detalle) async {
+    String textoTemporal = detalle['detalle'] as String;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _NotaModal(
+        nombreProducto: detalle['nombre'] as String,
+        textoInicial: textoTemporal,
+        onGuardar: (texto) {
+          textoTemporal = texto;
+          Navigator.pop(ctx);
+        },
+      ),
+    );
+
+    if (mounted) setState(() => detalle['detalle'] = textoTemporal);
   }
 
   void _showSnack(String msg, {required bool isError}) {
@@ -248,39 +234,10 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
     return cat[0].toUpperCase() + cat.substring(1);
   }
 
-  // ── Campo de texto reutilizable ───────────────────────────────────────────────
-
-  Widget _campoTexto({
-    required TextEditingController controller,
-    required String label,
-    required IconData icono,
-    TextInputType teclado = TextInputType.text,
-    List<TextInputFormatter>? formatters,
-    int maxLines = 1,
-  }) {
-    return TextField(
-      controller: controller,
-      keyboardType: teclado,
-      inputFormatters: formatters,
-      maxLines: maxLines,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icono, color: _textMuted, size: 20),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _primary, width: 2),
-        ),
-        isDense: true,
-      ),
-    );
-  }
-
   // ── Lista de productos por categoría ─────────────────────────────────────────
 
   Widget _buildProductosList(String categoria) {
     final items = productos.where((p) => p['categoria'] == categoria).toList();
-
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       itemCount: items.length,
@@ -344,10 +301,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
 
   Widget _buildDetalleCard(int index) {
     final detalle = detalles[index];
-    final controller = _controllers.putIfAbsent(
-      index,
-      () => TextEditingController(text: detalle['detalle']),
-    );
+    final textoActual = detalle['detalle'] as String;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -368,6 +322,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Nombre + eliminar ─────────────────────────────
             Row(
               children: [
                 Expanded(
@@ -394,6 +349,8 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
               ],
             ),
             const SizedBox(height: 12),
+
+            // ── Cantidad ──────────────────────────────────────
             Row(
               children: [
                 const Text(
@@ -432,44 +389,45 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
               ],
             ),
             const SizedBox(height: 12),
-            Builder(
-              builder: (itemContext) => TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 3,
-                keyboardType: TextInputType.multiline,
-                style: const TextStyle(fontSize: 17, color: _textDark),
-                decoration: InputDecoration(
-                  hintText: 'Nota para cocina...',
-                  hintStyle: const TextStyle(color: _textMuted, fontSize: 17),
-                  filled: true,
-                  fillColor: _bg,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide.none,
-                  ),
-                  prefixIcon: const Icon(
-                    Icons.edit_note,
-                    color: _textMuted,
-                    size: 22,
-                  ),
+
+            // ── Botón de nota (abre modal) ────────────────────
+            GestureDetector(
+              onTap: () => _abrirNotaDialog(detalle),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
                 ),
-                onChanged: (value) => detalle['detalle'] = value,
-                onTap: () {
-                  Future.delayed(
-                    const Duration(milliseconds: 300),
-                    () => Scrollable.ensureVisible(
-                      itemContext,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                      alignment: 0.5,
+                decoration: BoxDecoration(
+                  color: _bg,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.edit_note, color: _textMuted, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        textoActual.isEmpty
+                            ? 'Agregar nota para cocina...'
+                            : textoActual,
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: textoActual.isEmpty ? _textMuted : _textDark,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  );
-                },
+                    if (textoActual.isNotEmpty)
+                      const Icon(
+                        Icons.chevron_right,
+                        color: _textMuted,
+                        size: 20,
+                      ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -508,8 +466,6 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
       0,
       (s, d) => s + (d['cantidad'] as int),
     );
-    final keyboardH = MediaQuery.of(context).viewInsets.bottom;
-    final kbOpen = keyboardH > 0;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -595,13 +551,9 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
           ? const SizedBox.shrink()
           : Column(
               children: [
-                // ── MENÚ con tabs ─────────────────────────────────
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
-                  curve: Curves.easeInOut,
-                  height: kbOpen
-                      ? MediaQuery.of(context).size.height * 0.18
-                      : MediaQuery.of(context).size.height * 0.42,
+                // ── MENÚ con tabs ─────────────────────────────
+                SizedBox(
+                  height: MediaQuery.of(context).size.height * 0.42,
                   child: TabBarView(
                     controller: _tabController,
                     children: _categorias
@@ -612,7 +564,7 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
 
                 Container(height: 1, color: Colors.grey.withOpacity(0.15)),
 
-                // ── SELECCIONADOS ─────────────────────────────────
+                // ── SELECCIONADOS ─────────────────────────────
                 Expanded(
                   child: Column(
                     children: [
@@ -674,11 +626,11 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
                                 ),
                               )
                             : ListView.builder(
-                                padding: EdgeInsets.fromLTRB(
+                                padding: const EdgeInsets.fromLTRB(
                                   16,
                                   0,
                                   16,
-                                  keyboardH + 8,
+                                  8,
                                 ),
                                 itemCount: detalles.length,
                                 itemBuilder: (_, i) => _buildDetalleCard(i),
@@ -686,61 +638,50 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
                       ),
 
                       // Botón confirmar
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeInOut,
-                        height: kbOpen ? 0 : 52 + 24,
-                        child: SingleChildScrollView(
-                          physics: const NeverScrollableScrollPhysics(),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                            child: SizedBox(
-                              width: double.infinity,
-                              height: 52,
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _primary,
-                                  foregroundColor: Colors.white,
-                                  elevation: 0,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                ),
-                                onPressed: isProcesando
-                                    ? null
-                                    : _guardarProductos,
-                                child: isProcesando
-                                    ? const SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          color: Colors.white,
-                                          strokeWidth: 2.5,
-                                        ),
-                                      )
-                                    : Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          const Icon(
-                                            Icons.check_circle_outline,
-                                            size: 22,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            widget.esDomicilioNuevo
-                                                ? 'Confirmar Domicilio'
-                                                : 'Agregar Productos',
-                                            style: const TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                              letterSpacing: 0.3,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
                               ),
                             ),
+                            onPressed: isProcesando ? null : _guardarProductos,
+                            child: isProcesando
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2.5,
+                                    ),
+                                  )
+                                : Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(
+                                        Icons.check_circle_outline,
+                                        size: 22,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        widget.esDomicilioNuevo
+                                            ? 'Confirmar Domicilio'
+                                            : 'Agregar Productos',
+                                        style: const TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 0.3,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                           ),
                         ),
                       ),
@@ -749,6 +690,314 @@ class _AgregarProductoScreenState extends State<AgregarProductoScreen>
                 ),
               ],
             ),
+    );
+  }
+}
+
+// ── Modal datos del cliente ───────────────────────────────────────────────────
+
+class _DatosClienteModal extends StatefulWidget {
+  const _DatosClienteModal();
+
+  @override
+  State<_DatosClienteModal> createState() => _DatosClienteModalState();
+}
+
+class _DatosClienteModalState extends State<_DatosClienteModal> {
+  final _telefonoCtrl = TextEditingController();
+  final _direccionCtrl = TextEditingController();
+  final _telefonoFocus = FocusNode();
+  final _direccionFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _telefonoCtrl.dispose();
+    _direccionCtrl.dispose();
+    _telefonoFocus.dispose();
+    _direccionFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Título
+            const Row(
+              children: [
+                Icon(Icons.delivery_dining, color: _primary, size: 24),
+                SizedBox(width: 8),
+                Text(
+                  'Datos del domicilio',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w700,
+                    color: _textDark,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Ingresa la información del cliente',
+              style: TextStyle(fontSize: 15, color: _textMuted),
+            ),
+            const SizedBox(height: 20),
+
+            // Teléfono
+            TextField(
+              controller: _telefonoCtrl,
+              focusNode: _telefonoFocus,
+              autofocus: true,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              style: const TextStyle(fontSize: 17, color: _textDark),
+              textInputAction: TextInputAction.next,
+              onSubmitted: (_) => _direccionFocus.requestFocus(),
+              decoration: InputDecoration(
+                labelText: 'Teléfono',
+                labelStyle: const TextStyle(color: _textMuted),
+                prefixIcon: const Icon(Icons.phone_outlined, color: _textMuted),
+                filled: true,
+                fillColor: _bg,
+                contentPadding: const EdgeInsets.all(14),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _primary, width: 2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Dirección
+            TextField(
+              controller: _direccionCtrl,
+              focusNode: _direccionFocus,
+              keyboardType: TextInputType.streetAddress,
+              style: const TextStyle(fontSize: 17, color: _textDark),
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _confirmar(),
+              decoration: InputDecoration(
+                labelText: 'Dirección',
+                labelStyle: const TextStyle(color: _textMuted),
+                prefixIcon: const Icon(
+                  Icons.location_on_outlined,
+                  color: _textMuted,
+                ),
+                filled: true,
+                fillColor: _bg,
+                contentPadding: const EdgeInsets.all(14),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _primary, width: 2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Botón confirmar
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.check_circle_outline, size: 20),
+                label: const Text(
+                  'Guardar datos',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                onPressed: _confirmar,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmar() {
+    Navigator.pop(context, {
+      'telefono': _telefonoCtrl.text.trim(),
+      'direccion': _direccionCtrl.text.trim(),
+    });
+  }
+}
+
+// ── Modal de nota ─────────────────────────────────────────────────────────────
+
+class _NotaModal extends StatefulWidget {
+  final String nombreProducto;
+  final String textoInicial;
+  final void Function(String texto) onGuardar;
+
+  const _NotaModal({
+    required this.nombreProducto,
+    required this.textoInicial,
+    required this.onGuardar,
+  });
+
+  @override
+  State<_NotaModal> createState() => _NotaModalState();
+}
+
+class _NotaModalState extends State<_NotaModal> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.textoInicial);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Título
+            Row(
+              children: [
+                const Icon(Icons.edit_note, color: _primary, size: 24),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.nombreProducto,
+                    style: const TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w700,
+                      color: _textDark,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Nota para cocina',
+              style: TextStyle(fontSize: 15, color: _textMuted),
+            ),
+            const SizedBox(height: 16),
+
+            // TextField con altura fija
+            SizedBox(
+              height: 120,
+              child: TextField(
+                controller: _ctrl,
+                autofocus: true,
+                maxLines: null,
+                expands: true,
+                keyboardType: TextInputType.multiline,
+                textAlignVertical: TextAlignVertical.top,
+                style: const TextStyle(fontSize: 17, color: _textDark),
+                decoration: InputDecoration(
+                  hintText: 'Ej: sin cebolla, término medio...',
+                  hintStyle: const TextStyle(color: _textMuted, fontSize: 16),
+                  filled: true,
+                  fillColor: _bg,
+                  contentPadding: const EdgeInsets.all(14),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Botón guardar
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.check, size: 20),
+                label: const Text(
+                  'Guardar nota',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                onPressed: () => widget.onGuardar(_ctrl.text),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

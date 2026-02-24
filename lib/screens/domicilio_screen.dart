@@ -40,6 +40,8 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
     _cargarDomicilios();
   }
 
+  // ── API ──────────────────────────────────────────────────────────────────────
+
   Future<void> _cargarDomicilios() async {
     setState(() => isLoading = true);
     try {
@@ -56,44 +58,18 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
     }
   }
 
-  double _calcularTotalPedido(Map<String, dynamic> pedido) {
-    final detalles = pedido['detalles'] as List? ?? [];
-    return detalles.fold(0.0, (total, detalle) {
-      final precioRaw =
-          detalle['precioUnitario'] ?? detalle['producto']?['precio'];
-      final cantidadRaw = detalle['cantidad'] ?? 1;
-      final precio = precioRaw is num
-          ? precioRaw.toDouble()
-          : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
-      final cantidad = cantidadRaw is int
-          ? cantidadRaw
-          : int.tryParse(cantidadRaw.toString()) ?? 1;
-      return total + precio * cantidad;
-    });
-  }
-
-  void _showSnack(String msg, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: isError ? Colors.red[400] : Colors.green[600],
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
-  }
-
-  // ── Nuevo domicilio ───────────────────────────────────────────────────────
+  // ── Nuevo domicilio ───────────────────────────────────────────────────────────
 
   Future<void> _nuevoDomicilio() async {
     final sesion = await SessionManager.getUser();
     final idUsuario = sesion?['id_usuario'] ?? sesion?['idUsuario'];
-
     if (idUsuario == null) {
       _showSnack('Error: sesión no encontrada', isError: true);
       return;
     }
+    if (!mounted) return;
 
+    // AgregarProductoScreen maneja todo: menú → modal datos → crearPedido en una sola llamada
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -108,63 +84,100 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
         ),
       ),
     );
+
     _cargarDomicilios();
   }
 
-  // ── Parsea info del cliente desde el detalle ──────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  double _calcularTotal(Map<String, dynamic> pedido) {
+    final detalles = pedido['detalles'] as List? ?? [];
+    return detalles.fold(0.0, (total, d) {
+      final precioRaw = d['precioUnitario'] ?? d['producto']?['precio'];
+      final cantidadRaw = d['cantidad'] ?? 1;
+      final precio = precioRaw is num
+          ? precioRaw.toDouble()
+          : double.tryParse(precioRaw?.toString() ?? '') ?? 0.0;
+      final cantidad = cantidadRaw is int
+          ? cantidadRaw
+          : int.tryParse(cantidadRaw.toString()) ?? 1;
+      return total + precio * cantidad;
+    });
+  }
 
   Map<String, String> _parsearInfoCliente(Map<String, dynamic> pedido) {
     final detalles = pedido['detalles'] as List? ?? [];
-    if (detalles.isEmpty) return {};
-
-    final primerDetalle = detalles.first['detalle']?.toString() ?? '';
-    String telefono = '';
-    String direccion = '';
-
-    if (primerDetalle.contains('Tel:') || primerDetalle.contains('Dir:')) {
-      final partes = primerDetalle.split('|');
-      for (final p in partes) {
-        final limpio = p.trim();
-        if (limpio.startsWith('Tel:')) {
-          telefono = limpio.replaceFirst('Tel:', '').trim();
+    for (final d in detalles) {
+      final nombreProd =
+          d['producto']?['nombre']?.toString().toLowerCase() ?? '';
+      if (nombreProd == 'domicilio') {
+        final nota = d['detalle']?.toString() ?? '';
+        String telefono = '', direccion = '';
+        for (final p in nota.split('\n')) {
+          final limpio = p.trim();
+          if (limpio.startsWith('Tel:'))
+            telefono = limpio.replaceFirst('Tel:', '').trim();
+          if (limpio.startsWith('Dir:'))
+            direccion = limpio.replaceFirst('Dir:', '').trim();
         }
-        if (limpio.startsWith('Dir:')) {
-          direccion = limpio.replaceFirst('Dir:', '').trim();
-        }
+        return {'telefono': telefono, 'direccion': direccion};
       }
     }
-
-    return {'telefono': telefono, 'direccion': direccion};
+    return {};
   }
 
-  // ── Card de cada domicilio pendiente ─────────────────────────────────────
+  String _parsearHora(Map<String, dynamic> pedido) {
+    final fechaRaw =
+        pedido['fecha'] ?? pedido['creado'] ?? pedido['created_at'];
+    if (fechaRaw == null) return '';
+    try {
+      final fecha = DateTime.parse(fechaRaw.toString());
+      final hora = fecha.hour;
+      final minuto = fecha.minute.toString().padLeft(2, '0');
+      final periodo = hora >= 12 ? 'PM' : 'AM';
+      final hora12 = hora % 12 == 0 ? 12 : hora % 12;
+      return '$hora12:$minuto $periodo';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  void _showSnack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? Colors.red[400] : Colors.green[600],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  // ── Card domicilio ────────────────────────────────────────────────────────────
 
   Widget _buildDomicilioCard(Map<String, dynamic> pedido) {
     final idPedido = pedido['idPedido'] ?? pedido['id_pedido'];
-    final total = _calcularTotalPedido(pedido);
-    final detalles = pedido['detalles'] as List? ?? [];
+    final total = _calcularTotal(pedido);
+    final detalles = (pedido['detalles'] as List? ?? [])
+        .cast<Map<String, dynamic>>()
+        .where(
+          (d) =>
+              (d['producto']?['nombre']?.toString().toLowerCase() ?? '') !=
+              'domicilio',
+        )
+        .toList();
     final info = _parsearInfoCliente(pedido);
     final telefono = info['telefono'] ?? '';
     final direccion = info['direccion'] ?? '';
-
-    // Parsea la hora del pedido
-    final fechaRaw =
-        pedido['fecha'] ?? pedido['creado'] ?? pedido['created_at'];
-    String horaTexto = '';
-    if (fechaRaw != null) {
-      try {
-        final fecha = DateTime.parse(fechaRaw.toString()).toLocal();
-        horaTexto =
-            '${fecha.hour.toString().padLeft(2, '0')}:${fecha.minute.toString().padLeft(2, '0')}';
-      } catch (_) {}
-    }
+    final hora = _parsearHora(pedido);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: _cardBg,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+        border: Border.all(color: Colors.orange.withOpacity(0.25)),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.04),
@@ -176,7 +189,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Cabecera
+          // ── Cabecera con datos del cliente ───────────────────────────────
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
@@ -204,7 +217,6 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Dirección primero (más prominente)
                       if (direccion.isNotEmpty)
                         Row(
                           children: [
@@ -218,7 +230,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                               child: Text(
                                 direccion,
                                 style: const TextStyle(
-                                  fontSize: 16,
+                                  fontSize: 17,
                                   fontWeight: FontWeight.w700,
                                   color: _textDark,
                                 ),
@@ -226,7 +238,6 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                             ),
                           ],
                         ),
-                      // Teléfono abajo (secundario)
                       if (telefono.isNotEmpty) ...[
                         const SizedBox(height: 2),
                         Row(
@@ -240,7 +251,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                             Text(
                               telefono,
                               style: const TextStyle(
-                                fontSize: 14,
+                                fontSize: 15,
                                 color: _textMuted,
                               ),
                             ),
@@ -255,21 +266,20 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                     ],
                   ),
                 ),
-                // Hora en vez del id
-                if (horaTexto.isNotEmpty)
+                if (hora.isNotEmpty)
                   Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
+                      horizontal: 10,
+                      vertical: 5,
                     ),
                     decoration: BoxDecoration(
                       color: Colors.orange.withOpacity(0.12),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      horaTexto,
+                      hora,
                       style: const TextStyle(
-                        fontSize: 14,
+                        fontSize: 15,
                         color: Colors.orange,
                         fontWeight: FontWeight.w700,
                       ),
@@ -279,12 +289,12 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
             ),
           ),
 
+          // ── Productos (sin el ítem Domicilio) ────────────────────────────
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Productos
                 ...detalles.map((d) {
                   final prod = d['producto'];
                   final cant = d['cantidad'] ?? 1;
@@ -292,52 +302,74 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                   final precio = precioRaw is num
                       ? precioRaw.toDouble()
                       : double.tryParse(precioRaw.toString()) ?? 0.0;
+                  final nota = d['detalle']?.toString() ?? '';
+
                   return Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Row(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _primary.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            'x$cant',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: _primary,
+                        Row(
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: _primary.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  'x$cant',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: _primary,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                prod?['nombre'] ?? 'Producto',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: _textDark,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              _formatoPesos.format(precio * cant),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: _textDark,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (nota.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 46, top: 3),
+                            child: Text(
+                              nota,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: _textMuted,
+                                fontStyle: FontStyle.italic,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            prod?['nombre'] ?? 'Producto',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              color: _textDark,
-                            ),
-                          ),
-                        ),
-                        Text(
-                          _formatoPesos.format(precio * cant),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: _textDark,
-                          ),
-                        ),
                       ],
                     ),
                   );
                 }),
 
-                const Divider(height: 20),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Divider(height: 1),
+                ),
 
                 // Total
                 Row(
@@ -345,7 +377,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                     const Text(
                       'Total',
                       style: TextStyle(
-                        fontSize: 17,
+                        fontSize: 19,
                         fontWeight: FontWeight.w700,
                         color: _textDark,
                       ),
@@ -354,7 +386,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                     Text(
                       _formatoPesos.format(total),
                       style: const TextStyle(
-                        fontSize: 20,
+                        fontSize: 22,
                         fontWeight: FontWeight.w800,
                         color: _primary,
                       ),
@@ -362,7 +394,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                   ],
                 ),
 
-                const SizedBox(height: 12),
+                const SizedBox(height: 14),
 
                 // Botones acción
                 Row(
@@ -370,12 +402,19 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                     Expanded(
                       child: OutlinedButton.icon(
                         icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Añadir'),
+                        label: const Text(
+                          'Añadir',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: _primary,
                           side: const BorderSide(color: _primary),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(12),
                           ),
                         ),
                         onPressed: () async {
@@ -397,13 +436,20 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                     Expanded(
                       child: ElevatedButton.icon(
                         icon: const Icon(Icons.payments_outlined, size: 18),
-                        label: const Text('Cobrar'),
+                        label: const Text(
+                          'Cobrar',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _primary,
                           foregroundColor: Colors.white,
                           elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(12),
                           ),
                         ),
                         onPressed: () async {
@@ -432,7 +478,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
     );
   }
 
-  // ── BUILD ──────────────────────────────────────────────────────────────────
+  // ── BUILD ────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -470,7 +516,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
             ),
             Text(
               'Pedidos pendientes',
-              style: TextStyle(fontSize: 14, color: _textMuted),
+              style: TextStyle(fontSize: 15, color: _textMuted),
             ),
           ],
         ),
@@ -484,7 +530,6 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
                 children: [
-                  // Botón tomar nuevo pedido
                   SizedBox(
                     width: double.infinity,
                     height: 52,
@@ -493,7 +538,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                       label: const Text(
                         'Tomar pedido a domicilio',
                         style: TextStyle(
-                          fontSize: 17,
+                          fontSize: 18,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -511,14 +556,13 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Lista pendientes
                   if (domiciliosPendientes.isNotEmpty) ...[
                     Row(
                       children: [
                         const Text(
                           'PENDIENTES',
                           style: TextStyle(
-                            fontSize: 13,
+                            fontSize: 17,
                             fontWeight: FontWeight.w800,
                             letterSpacing: 1.2,
                             color: _textMuted,
@@ -527,8 +571,8 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                         const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
+                            horizontal: 10,
+                            vertical: 3,
                           ),
                           decoration: BoxDecoration(
                             color: Colors.orange.withOpacity(0.15),
@@ -537,7 +581,7 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                           child: Text(
                             '${domiciliosPendientes.length}',
                             style: const TextStyle(
-                              fontSize: 13,
+                              fontSize: 16,
                               fontWeight: FontWeight.w700,
                               color: Colors.orange,
                             ),
@@ -550,10 +594,11 @@ class _DomicilioScreenState extends State<DomicilioScreen> {
                       (p) => _buildDomicilioCard(p as Map<String, dynamic>),
                     ),
                   ] else
-                    Center(
-                      child: Padding(
-                        padding: const EdgeInsets.only(top: 40),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 40),
+                      child: Center(
                         child: Column(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
                               Icons.delivery_dining_outlined,

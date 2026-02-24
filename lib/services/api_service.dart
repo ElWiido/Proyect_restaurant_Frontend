@@ -19,14 +19,7 @@ class ApiService {
   static const String _emulador = 'http://10.0.2.2:3333';
 
   //ACTIVO — cambia esto según dónde estés:
-  // -- RESTAURANTE --
-  //static const String _entornoActivo = _restaurante;
-
-  //CASA (elige automáticamente físico o emulador) --
   static const String _entornoActivo = _autoDetectar;
-
-  // -- PRODUCCIÓN --
-  // static const String _entornoActivo = _produccion;
 
   // Constante especial para modo auto (casa)
   static const String _autoDetectar = 'auto';
@@ -41,7 +34,6 @@ class ApiService {
     }
   }
 
-  //Solo se usa cuando _entornoActivo = _autoDetectar (modo casa)
   String _detectarUrl() {
     try {
       final hostname = Platform.localHostname.toLowerCase();
@@ -146,6 +138,17 @@ class ApiService {
     final response = await _post('/pedidos/$idPedido/productos', payload);
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw Exception('Error agregando lote: ${response.body}');
+    }
+  }
+
+  // ✅ Guarda el monto editado por el admin en el backend
+  // Se sincroniza en todos los dispositivos automáticamente
+  Future<void> actualizarMontoPedido(int idPedido, double monto) async {
+    final response = await _patch('/pedidos/$idPedido/monto', {
+      'monto_editado': monto,
+    });
+    if (response.statusCode != 200) {
+      throw Exception('Error al actualizar monto: ${response.body}');
     }
   }
 
@@ -279,6 +282,24 @@ class ApiService {
       return response;
     } catch (e) {
       print('❌ PUT $path → $e');
+      rethrow;
+    }
+  }
+
+  // ✅ PATCH — para actualizaciones parciales (ej: monto_editado)
+  Future<http.Response> _patch(String path, Map<String, dynamic> body) async {
+    try {
+      final request = http.Request('PATCH', Uri.parse('$baseUrl$path'))
+        ..headers.addAll(_headers)
+        ..body = jsonEncode(body);
+      final streamed = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 10));
+      final response = await http.Response.fromStream(streamed);
+      _checkStatus(response);
+      return response;
+    } catch (e) {
+      print('❌ PATCH $path → $e');
       rethrow;
     }
   }
